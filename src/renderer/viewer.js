@@ -1,7 +1,7 @@
-// Cornerstone 3D stack viewer. Bundled by esbuild into dist/viewer.bundle.js
-// and exposed as window.viewerAPI. Renderer calls viewerAPI.open(folder)
-// when a thumbnail is clicked.
-console.log('[viewer] bundle entry');
+// Cornerstone 3D stack / volume viewer. Bundled by scripts/build-viewer.mjs
+// into src/renderer/viewer.bundle.js and exposed as window.viewerAPI.
+// Renderer calls viewerAPI.open(folder, container) when a thumbnail is
+// clicked.
 
 import * as cornerstone from '@cornerstonejs/core';
 import { init as csToolsInit, ToolGroupManager, StackScrollTool,
@@ -101,33 +101,21 @@ async function loadStack(folder) {
 }
 
 async function open(folder, container) {
-  console.log('[viewer] open() start folder=', folder);
   await ensureInitialized();
-  console.log('[viewer] init done');
 
   element = container;
   element.style.width = '100%';
   element.style.height = '100%';
   element.oncontextmenu = (e) => e.preventDefault();
 
+  // Wait for layout — the container was just unhidden and may still have
+  // zero dimensions in the current frame.
   await new Promise((r) => requestAnimationFrame(r));
-  const rect0 = element.getBoundingClientRect();
-  console.log('[viewer] container size after rAF:', rect0.width, '×', rect0.height);
 
   if (renderingEngine) renderingEngine.destroy();
   renderingEngine = new RenderingEngine(RENDERING_ENGINE_ID);
-  console.log('[viewer] rendering engine created');
-
-  const viewportInput = {
-    viewportId: VIEWPORT_ID,
-    type: ViewportType.STACK,
-    element,
-  };
-  renderingEngine.enableElement(viewportInput);
-  console.log('[viewer] viewport enabled');
 
   const imageIds = await loadStack(folder);
-  console.log('[viewer] got', imageIds.length, 'imageIds');
 
   // Try volume viewport first — gives us live axial/coronal/sagittal
   // reformats via keyboard shortcuts. Falls back to stack viewer for
@@ -136,7 +124,7 @@ async function open(folder, container) {
   let asVolume = false;
   if (imageIds.length >= 3) {
     try {
-      const viewportInput = {
+      renderingEngine.enableElement({
         viewportId: VIEWPORT_ID,
         type: ViewportType.ORTHOGRAPHIC,
         element,
@@ -144,21 +132,16 @@ async function open(folder, container) {
           orientation: OrientationAxis.AXIAL,
           background: [0, 0, 0],
         },
-      };
-      renderingEngine.enableElement(viewportInput);
+      });
 
       const volumeId = `cornerstoneStreamingImageVolume:${folder}`;
-      console.log('[viewer] creating volume…');
       await volumeLoader.createAndCacheVolume(volumeId, { imageIds });
 
       viewport = renderingEngine.getViewport(VIEWPORT_ID);
       await viewport.setVolumes([{ volumeId }]);
-
-      const vol = cornerstone.cache.getVolume(volumeId);
-      vol?.load();  // stream-fill the volume in the background
+      cornerstone.cache.getVolume(volumeId)?.load();
 
       asVolume = true;
-      console.log('[viewer] volume viewport ready');
     } catch (e) {
       console.warn('[viewer] volume failed, falling back to stack:', e);
       renderingEngine.disableElement(VIEWPORT_ID);
@@ -172,12 +155,7 @@ async function open(folder, container) {
       element,
     });
     viewport = renderingEngine.getViewport(VIEWPORT_ID);
-    try {
-      await viewport.setStack(imageIds, Math.floor(imageIds.length / 2));
-    } catch (e) {
-      console.error('[viewer] setStack FAILED:', e);
-      throw e;
-    }
+    await viewport.setStack(imageIds, Math.floor(imageIds.length / 2));
   }
 
   currentViewport = viewport;
@@ -186,7 +164,6 @@ async function open(folder, container) {
 
   renderingEngine.resize(true, true);
   viewport.render();
-  console.log('[viewer] rendered', asVolume ? '(volume)' : '(stack)');
 
   const tg = ToolGroupManager.getToolGroup(TOOL_GROUP_ID);
   tg.addViewport(VIEWPORT_ID, RENDERING_ENGINE_ID);
@@ -262,6 +239,9 @@ async function open(folder, container) {
       e.preventDefault();
       slabIdx = Math.max(slabIdx - 1, 0);
       applySlab();
+    } else if (e.key === ' ') {
+      e.preventDefault();
+      resetWindow();
     }
   };
   document.addEventListener('keydown', keyHandler);
@@ -286,17 +266,13 @@ function applySlab() {
 
 async function preloadStack(imageIds, signal) {
   const { imageLoader } = cornerstone;
-  let loaded = 0;
   for (const id of imageIds) {
     if (signal.aborted) return;
     try {
       await imageLoader.loadAndCacheImage(id);
-      loaded += 1;
-      if (loaded === 1 || loaded % 50 === 0 || loaded === imageIds.length) {
-        console.log(`[viewer] preloaded ${loaded}/${imageIds.length}`);
-      }
-    } catch (e) {
-      console.warn('[viewer] preload failed for', id, e);
+    } catch {
+      // Individual slice failures are non-fatal — viewer will still
+      // render the ones that decoded.
     }
   }
 }
@@ -329,5 +305,20 @@ function close() {
   currentIsVolume = false;
 }
 
-window.viewerAPI = { open, close };
-console.log('[viewer] bundle ready, viewerAPI exposed');
+function applyWindow(center, width) {
+  if (!currentViewport || !(width > 0)) return;
+  currentViewport.setProperties({
+    voiRange: { lower: center - width / 2, upper: center + width / 2 },
+  });
+  currentViewport.render();
+  emitState();
+}
+
+function resetWindow() {
+  if (!currentViewport) return;
+  currentViewport.resetProperties();
+  currentViewport.render();
+  emitState();
+}
+
+window.viewerAPI = { open, close, applyWindow, resetWindow };

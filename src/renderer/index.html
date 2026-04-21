@@ -320,13 +320,40 @@
     .viewer-header {
       display: flex;
       justify-content: space-between;
-      align-items: baseline;
+      align-items: center;
       gap: 12px;
     }
     .viewer-header h2 {
       margin: 0;
       font-size: 15px;
       font-weight: 600;
+    }
+    .viewer-actions {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+    }
+    .viewer-actions select {
+      font: inherit;
+      font-size: 12px;
+      padding: 4px 6px;
+      border-radius: 4px;
+      border: 1px solid rgba(127, 127, 127, 0.4);
+      background: transparent;
+      color: inherit;
+    }
+    button.icon-btn {
+      width: 26px;
+      height: 26px;
+      padding: 0;
+      line-height: 1;
+      font-size: 18px;
+      color: #888;
+      border-radius: 4px;
+    }
+    button.icon-btn:hover {
+      color: #333;
+      background: rgba(127, 127, 127, 0.15);
     }
     .viewer-hint {
       font-size: 11px;
@@ -509,7 +536,14 @@
       <div id="viewer-section" hidden>
         <div class="viewer-header">
           <h2 id="viewer-title">Viewer</h2>
-          <button id="btn-close-viewer">Close</button>
+          <div class="viewer-actions">
+            <select id="viewer-preset" title="Apply a window preset">
+              <option value="">Preset…</option>
+              <option value="__reset">Reset (space)</option>
+            </select>
+            <button class="primary" id="btn-save-viewer" title="Save current view as a derived series">Save</button>
+            <button id="btn-close-viewer" class="icon-btn" aria-label="Close">×</button>
+          </div>
         </div>
         <div id="viewer-hint" class="viewer-hint"></div>
         <div id="viewer-canvas"></div>

@@ -9,6 +9,8 @@ const viewerTitle = document.getElementById('viewer-title');
 const viewerHint = document.getElementById('viewer-hint');
 const viewerStatus = document.getElementById('viewer-status');
 const btnCloseViewer = document.getElementById('btn-close-viewer');
+const btnSaveViewer = document.getElementById('btn-save-viewer');
+const viewerPresetSelect = document.getElementById('viewer-preset');
 const log = document.getElementById('log');
 
 const inspectedTitle = document.getElementById('inspected-title');
@@ -48,13 +50,14 @@ let windowPresets = {};
 let studyMeta = null; // { studies: [{ ..., series: [...] }, ...] }
 let selectedStudyIndex = null;
 let selectedSeriesIndex = null;
+let viewerContext = null; // { studyIdx, seriesIdx, folder } for Save
+let viewerState = null;   // latest { isVolume, orientation, slabMm, center, width }
 
 // Helpers -------------------------------------------------------------------
 function write(msg) {
   const stamp = new Date().toLocaleTimeString();
   log.textContent += `[${stamp}] ${msg}\n`;
   log.scrollTop = log.scrollHeight;
-  console.log('[renderer]', msg);
 }
 
 function humanBytes(n) {
@@ -333,10 +336,11 @@ async function openViewerForSeries(studyIdx, seriesIdx) {
     write('viewer bundle not loaded');
     return;
   }
+  viewerContext = { studyIdx, seriesIdx, folder: se.folder };
+  viewerState = null;
   viewerTitle.textContent = se.description || `Series ${seriesIdx + 1}`;
-  viewerHint.textContent = 'scroll page · drag W/L · middle pan · right zoom · A/C/S orient · [/] slab 1/2/3/5/10 mm';
+  viewerHint.textContent = 'scroll page · drag W/L · middle pan · right zoom · A/C/S orient · [/] slab 1/2/3/5/10 mm · space reset';
   viewerSection.hidden = false;
-  // Hide the Create panel while viewing so the layout doesn't compete.
   addVersionPanel.hidden = true;
   viewerSection.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   try {
@@ -352,11 +356,57 @@ function closeViewer() {
   viewerCanvas.innerHTML = '';
   viewerStatus.innerHTML = '';
   viewerSection.hidden = true;
+  viewerContext = null;
+  viewerState = null;
+}
+
+async function saveViewerAsVersion() {
+  if (!viewerContext || !viewerState) return;
+  const { studyIdx, folder } = viewerContext;
+  const { isVolume, orientation, slabMm, center, width } = viewerState;
+
+  const spec = {};
+  const suffixParts = [];
+  if (isVolume && orientation && slabMm) {
+    spec.reformat = {
+      orientation,
+      thickness: slabMm,
+      spacing: slabMm,
+      mode: 'avg',
+    };
+    suffixParts.push(`${orientation}-${slabMm}mm`);
+  }
+  if (center != null && width != null) {
+    spec.window = { center: Math.round(center), width: Math.round(width) };
+    suffixParts.push(`W${Math.round(center)}-${Math.round(width)}`);
+  }
+  if (!spec.reformat && !spec.window) {
+    write('nothing to save — adjust orientation, slab, or window first');
+    return;
+  }
+
+  const suffix = suffixParts.join('-');
+  const output = appendOutputSuffix(folder, suffix, 'folder');
+
+  processingSummary.textContent = `Saving ${suffix} version → ${output}`;
+  setState('processing');
+
+  try {
+    await runStream('/transform', { input: folder, output, ...spec });
+    await appendNewSeries(output, suffix, studyIdx);
+    setState('done');
+    write(`saved ${suffix}`);
+  } catch (e) {
+    write(`save failed: ${e.message || e}`);
+    setState('done');
+  }
 }
 
 btnCloseViewer.addEventListener('click', closeViewer);
+btnSaveViewer.addEventListener('click', saveViewerAsVersion);
 
 document.addEventListener('viewer:state', (e) => {
+  viewerState = e.detail;
   const { isVolume, orientation, slabMm, center, width } = e.detail;
   const bits = [];
   if (isVolume) {
@@ -699,13 +749,33 @@ async function loadPresets() {
   if (!res.ok) return;
   windowPresets = await res.json();
   for (const name of Object.keys(windowPresets)) {
-    const opt = document.createElement('option');
-    opt.value = name;
     const p = windowPresets[name];
-    opt.textContent = `${name} (C ${p.center} / W ${p.width})`;
-    windowPresetSelect.appendChild(opt);
+    const label = `${name} (C ${p.center} / W ${p.width})`;
+
+    const opt1 = document.createElement('option');
+    opt1.value = name;
+    opt1.textContent = label;
+    windowPresetSelect.appendChild(opt1);
+
+    const opt2 = document.createElement('option');
+    opt2.value = name;
+    opt2.textContent = label;
+    viewerPresetSelect.appendChild(opt2);
   }
 }
+
+viewerPresetSelect.addEventListener('change', () => {
+  const v = viewerPresetSelect.value;
+  if (!v) return;
+  if (v === '__reset') {
+    window.viewerAPI?.resetWindow?.();
+  } else {
+    const p = windowPresets[v];
+    if (p) window.viewerAPI?.applyWindow?.(p.center, p.width);
+  }
+  // Reset the select so the same preset can be re-applied
+  viewerPresetSelect.value = '';
+});
 
 // Drop handling -------------------------------------------------------------
 ['dragenter', 'dragover'].forEach((evt) =>
