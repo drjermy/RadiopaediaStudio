@@ -133,6 +133,7 @@ def series_info(req: SeriesInfoRequest) -> dict:
             'folder': str(folder),
             'description': req.label,
             'slice_count': 0,
+            'total_bytes': 0,
             'thumbnail': None,
         }
 
@@ -143,6 +144,10 @@ def series_info(req: SeriesInfoRequest) -> dict:
         thumb = make_thumbnail(middle)
     except Exception:
         pass
+
+    total_bytes = sum(p.stat().st_size for p in files)
+    ts_uid = str(first.file_meta.TransferSyntaxUID) if getattr(first, 'file_meta', None) else None
+    ts_info = _classify_transfer_syntax(ts_uid)
 
     def _tag(ds, kw):
         return ds.get(kw, None)
@@ -165,8 +170,49 @@ def series_info(req: SeriesInfoRequest) -> dict:
         'orientation': classify_orientation(_tag(first, 'ImageOrientationPatient')),
         'slice_thickness': thickness,
         'slice_count': len(files),
+        'total_bytes': total_bytes,
+        'transfer_syntax': ts_info,
         'thumbnail': thumb,
     }
+
+
+_TS_NAMES = {
+    '1.2.840.10008.1.2':       'uncompressed (implicit LE)',
+    '1.2.840.10008.1.2.1':     'uncompressed',
+    '1.2.840.10008.1.2.2':     'uncompressed (explicit BE)',
+    '1.2.840.10008.1.2.4.50':  'JPEG baseline',
+    '1.2.840.10008.1.2.4.51':  'JPEG extended',
+    '1.2.840.10008.1.2.4.57':  'JPEG lossless',
+    '1.2.840.10008.1.2.4.70':  'JPEG lossless SV1',
+    '1.2.840.10008.1.2.4.80':  'JPEG-LS lossless',
+    '1.2.840.10008.1.2.4.81':  'JPEG-LS lossy',
+    '1.2.840.10008.1.2.4.90':  'JPEG 2000 lossless',
+    '1.2.840.10008.1.2.4.91':  'JPEG 2000 lossy',
+    '1.2.840.10008.1.2.4.92':  'JPEG 2000 pt2 lossless',
+    '1.2.840.10008.1.2.4.93':  'JPEG 2000 pt2 lossy',
+    '1.2.840.10008.1.2.4.201': 'HTJ2K lossless',
+    '1.2.840.10008.1.2.4.202': 'HTJ2K lossless-only',
+    '1.2.840.10008.1.2.4.203': 'HTJ2K lossy',
+    '1.2.840.10008.1.2.5':     'RLE lossless',
+}
+_TS_UNCOMPRESSED = {'1.2.840.10008.1.2', '1.2.840.10008.1.2.1', '1.2.840.10008.1.2.2'}
+_TS_LOSSLESS = {
+    '1.2.840.10008.1.2.4.57', '1.2.840.10008.1.2.4.70',
+    '1.2.840.10008.1.2.4.80', '1.2.840.10008.1.2.4.90',
+    '1.2.840.10008.1.2.4.92', '1.2.840.10008.1.2.4.201',
+    '1.2.840.10008.1.2.4.202', '1.2.840.10008.1.2.5',
+}
+
+
+def _classify_transfer_syntax(uid: str | None) -> dict:
+    if not uid:
+        return {'uid': None, 'name': 'unknown', 'compressed': False, 'lossy': False}
+    name = _TS_NAMES.get(uid, uid)
+    if uid in _TS_UNCOMPRESSED:
+        return {'uid': uid, 'name': name, 'compressed': False, 'lossy': False}
+    if uid in _TS_LOSSLESS:
+        return {'uid': uid, 'name': name, 'compressed': True, 'lossy': False}
+    return {'uid': uid, 'name': name, 'compressed': True, 'lossy': True}
 
 
 @app.post('/thumbnails')

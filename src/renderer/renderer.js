@@ -377,6 +377,7 @@ function renderStudySummary() {
     if (st.study_date) metaBits.push(st.study_date);
     metaBits.push(`${st.series_count} series`);
     metaBits.push(`${st.total_slices} slice${st.total_slices === 1 ? '' : 's'}`);
+    if (st.total_bytes) metaBits.push(humanBytes(st.total_bytes));
 
     const header = document.createElement('button');
     header.className = 'study-header';
@@ -438,7 +439,30 @@ function renderStudySummary() {
         const meta = document.createElement('div');
         meta.className = 'series-meta';
         meta.textContent = tech.join(' · ');
-        li.append(desc, meta);
+
+        const sizeBits = [];
+        if (se.total_bytes != null) {
+          sizeBits.push(humanBytes(se.total_bytes));
+          if (se.slice_count > 0) {
+            sizeBits.push(`${humanBytes(se.total_bytes / se.slice_count)}/slice`);
+          }
+        }
+        if (se.transfer_syntax?.name) sizeBits.push(se.transfer_syntax.name);
+        const size = document.createElement('div');
+        size.className = 'series-meta';
+        size.textContent = sizeBits.join(' · ');
+
+        li.append(desc, meta, size);
+
+        // Compression pill on the thumbnail (top-right) — grey for lossless,
+        // amber for lossy. No pill for uncompressed.
+        const ts = se.transfer_syntax;
+        if (ts?.compressed) {
+          const pill = document.createElement('span');
+          pill.className = 'compression-tag' + (ts.lossy ? ' lossy' : '');
+          pill.textContent = ts.lossy ? 'LOSSY' : 'LOSSLESS';
+          li.appendChild(pill);
+        }
 
         ul.appendChild(li);
       }
@@ -580,11 +604,14 @@ async function appendNewSeries(folder, label, studyIdx) {
       orientation: info.orientation,
       slice_thickness: info.slice_thickness,
       slice_count: info.slice_count,
+      total_bytes: info.total_bytes,
+      transfer_syntax: info.transfer_syntax,
       folder: info.folder,
       thumbnail: info.thumbnail,
       kind: 'derived',
       operation: label,
     });
+    if (info.total_bytes) st.total_bytes = (st.total_bytes || 0) + info.total_bytes;
     st.series_count = st.series.length;
     st.total_slices = (st.total_slices || 0) + (info.slice_count || 0);
     renderStudySummary();

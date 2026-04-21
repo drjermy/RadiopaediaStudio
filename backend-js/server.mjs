@@ -127,6 +127,53 @@ function getTagValues(dict, keyword) {
   return v && Array.isArray(v.Value) ? v.Value : null;
 }
 
+// Transfer syntax classification ---------------------------------------
+
+const TS_NAMES = {
+  '1.2.840.10008.1.2':       'uncompressed (implicit LE)',
+  '1.2.840.10008.1.2.1':     'uncompressed',
+  '1.2.840.10008.1.2.2':     'uncompressed (explicit BE)',
+  '1.2.840.10008.1.2.4.50':  'JPEG baseline',
+  '1.2.840.10008.1.2.4.51':  'JPEG extended',
+  '1.2.840.10008.1.2.4.57':  'JPEG lossless',
+  '1.2.840.10008.1.2.4.70':  'JPEG lossless SV1',
+  '1.2.840.10008.1.2.4.80':  'JPEG-LS lossless',
+  '1.2.840.10008.1.2.4.81':  'JPEG-LS lossy',
+  '1.2.840.10008.1.2.4.90':  'JPEG 2000 lossless',
+  '1.2.840.10008.1.2.4.91':  'JPEG 2000 lossy',
+  '1.2.840.10008.1.2.4.92':  'JPEG 2000 pt2 lossless',
+  '1.2.840.10008.1.2.4.93':  'JPEG 2000 pt2 lossy',
+  '1.2.840.10008.1.2.4.201': 'HTJ2K lossless',
+  '1.2.840.10008.1.2.4.202': 'HTJ2K lossless-only',
+  '1.2.840.10008.1.2.4.203': 'HTJ2K lossy',
+  '1.2.840.10008.1.2.5':     'RLE lossless',
+};
+
+const TS_UNCOMPRESSED = new Set([
+  '1.2.840.10008.1.2',
+  '1.2.840.10008.1.2.1',
+  '1.2.840.10008.1.2.2',
+]);
+
+const TS_LOSSLESS = new Set([
+  '1.2.840.10008.1.2.4.57',
+  '1.2.840.10008.1.2.4.70',
+  '1.2.840.10008.1.2.4.80',
+  '1.2.840.10008.1.2.4.90',
+  '1.2.840.10008.1.2.4.92',
+  '1.2.840.10008.1.2.4.201',
+  '1.2.840.10008.1.2.4.202',
+  '1.2.840.10008.1.2.5',
+]);
+
+function classifyTransferSyntax(uid) {
+  if (!uid) return { uid: null, name: 'unknown', compressed: false, lossy: false };
+  const name = TS_NAMES[uid] || uid;
+  if (TS_UNCOMPRESSED.has(uid)) return { uid, name, compressed: false, lossy: false };
+  if (TS_LOSSLESS.has(uid))     return { uid, name, compressed: true,  lossy: false };
+  return { uid, name, compressed: true, lossy: true };
+}
+
 function commonParent(paths) {
   if (paths.length === 0) return null;
   if (paths.length === 1) return path.dirname(paths[0]);
@@ -191,24 +238,32 @@ async function *iterAnonymise(inputPath, outputPath) {
           body_part: safeStr(getTag(originalDict, 'BodyPartExamined')),
           study_date: safeStr(getTag(originalDict, 'StudyDate')),
           total_slices: 0,
+          total_bytes: 0,
           _series: new Map(),
         });
       }
       if (origStudy) {
         const st = studies.get(origStudy);
         st.total_slices += 1;
+        const fileSize = inputBuffer.length;
+        st.total_bytes += fileSize;
         if (origSeries && !st._series.has(origSeries)) {
           const iopValues = getTagValues(originalDict, 'ImageOrientationPatient');
+          const tsuid = safeStr(getTag(data.meta, 'TransferSyntaxUID'));
           st._series.set(origSeries, {
             description: safeStr(getTag(originalDict, 'SeriesDescription')),
             modality: safeStr(getTag(originalDict, 'Modality')),
             orientation: classifyOrientationArr(iopValues),
             slice_thickness: safeNum(getTag(originalDict, 'SliceThickness')),
             slice_count: 0,
+            total_bytes: 0,
+            transfer_syntax: classifyTransferSyntax(tsuid),
           });
         }
         if (origSeries) {
-          st._series.get(origSeries).slice_count += 1;
+          const s = st._series.get(origSeries);
+          s.slice_count += 1;
+          s.total_bytes += fileSize;
           if (!seriesPaths.has(origSeries)) seriesPaths.set(origSeries, []);
           seriesPaths.get(origSeries).push(dst);
         }
