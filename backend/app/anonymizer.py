@@ -102,3 +102,22 @@ def scrub_file(input_path: Path, output_path: Path) -> dict:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     ds.save_as(output_path, enforce_file_format=True)
     return {'kept': kept, 'dropped': n_dropped, 'dropped_tags': dropped}
+
+
+def find_dicoms(input_dir: Path) -> list[Path]:
+    return [p for p in input_dir.rglob('*') if p.is_file() and p.suffix.lower() == '.dcm']
+
+
+def iter_scrub_folder(input_dir: Path, output_dir: Path):
+    """Yield per-file results as they're processed. Per-file failures are
+    yielded as {'error': ...} rather than raised — a bad file doesn't abort
+    the batch.
+    """
+    for src in find_dicoms(input_dir):
+        rel = src.relative_to(input_dir)
+        dst = output_dir / rel
+        try:
+            info = scrub_file(src, dst)
+            yield {'input': str(src), 'output': str(dst), **info}
+        except Exception as e:
+            yield {'input': str(src), 'error': f'{type(e).__name__}: {e}'}

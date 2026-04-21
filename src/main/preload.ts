@@ -6,4 +6,5 @@ contextBridge.exposeInMainWorld('backend', {
 
 contextBridge.exposeInMainWorld('fsBridge', {
   pathForFile: (file: File): string => webUtils.getPathForFile(file),
+  isDirectory: (p: string): Promise<boolean> => ipcRenderer.invoke('fs:isDirectory', p),
 });

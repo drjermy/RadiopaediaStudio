@@ -38,6 +38,23 @@
       border-color: #0a84ff;
       background: rgba(10, 132, 255, 0.08);
     }
+    #progress-wrap {
+      display: none;
+      gap: 12px;
+      align-items: center;
+    }
+    #progress-wrap.active { display: flex; }
+    progress {
+      flex: 1;
+      height: 8px;
+    }
+    #progress-label {
+      font-variant-numeric: tabular-nums;
+      font-size: 13px;
+      color: #666;
+      min-width: 120px;
+      text-align: right;
+    }
     #log {
       font-family: ui-monospace, "SF Mono", Menlo, monospace;
       font-size: 12px;
@@ -52,7 +69,11 @@
 </head>
 <body>
   <h1>PACS Anonymizer</h1>
-  <div id="drop">Drop a .dcm file here</div>
+  <div id="drop">Drop a .dcm file or folder here</div>
+  <div id="progress-wrap">
+    <progress id="progress-bar" value="0" max="1"></progress>
+    <span id="progress-label">0 / 0</span>
+  </div>
   <div id="log"></div>
   <script src="./renderer.js"></script>
 </body>

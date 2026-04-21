@@ -1,4 +1,5 @@
 import { app, BrowserWindow, ipcMain } from 'electron';
+import { statSync } from 'fs';
 import * as path from 'path';
 import { BackendHandle, startBackend, stopBackend } from './python-manager';
 
@@ -22,6 +23,9 @@ async function createWindow(): Promise<void> {
     },
   });
   await mainWindow.loadFile(path.join(rendererRoot, 'index.html'));
+  if (!app.isPackaged) {
+    mainWindow.webContents.openDevTools({ mode: 'detach' });
+  }
 }
 
 app.whenReady().then(async () => {
@@ -39,6 +43,13 @@ app.whenReady().then(async () => {
   }
 
   ipcMain.handle('backend:port', () => backend?.port ?? null);
+  ipcMain.handle('fs:isDirectory', (_evt, p: string) => {
+    try {
+      return statSync(p).isDirectory();
+    } catch {
+      return false;
+    }
+  });
 
   await createWindow();
 });
