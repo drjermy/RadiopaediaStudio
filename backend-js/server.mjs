@@ -255,6 +255,7 @@ async function *iterAnonymise(inputPath, outputPath) {
             modality: safeStr(getTag(originalDict, 'Modality')),
             orientation: classifyOrientationArr(iopValues),
             slice_thickness: safeNum(getTag(originalDict, 'SliceThickness')),
+            slice_spacing: safeNum(getTag(originalDict, 'SpacingBetweenSlices')),
             slice_count: 0,
             total_bytes: 0,
             transfer_syntax: classifyTransferSyntax(tsuid),

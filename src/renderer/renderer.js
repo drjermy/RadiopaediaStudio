@@ -11,6 +11,14 @@ const viewerStatus = document.getElementById('viewer-status');
 const btnCloseViewer = document.getElementById('btn-close-viewer');
 const btnSaveViewer = document.getElementById('btn-save-viewer');
 const viewerPresetSelect = document.getElementById('viewer-preset');
+const viewerCompressMode = document.getElementById('viewer-compress-mode');
+const viewerCompressRatio = document.getElementById('viewer-compress-ratio');
+const viewerCompressRatioLabel = document.getElementById('viewer-compress-ratio-label');
+const viewerTrim = document.getElementById('viewer-trim');
+const trimStart = document.getElementById('trim-start');
+const trimEnd = document.getElementById('trim-end');
+const trimFill = document.getElementById('trim-fill');
+const trimLabel = document.getElementById('trim-label');
 const log = document.getElementById('log');
 
 const inspectedTitle = document.getElementById('inspected-title');
@@ -28,19 +36,6 @@ const studySummaryEl = document.getElementById('study-summary');
 const btnAnonymise = document.getElementById('btn-anonymise');
 const btnCancelInspect = document.getElementById('btn-cancel-inspect');
 const btnReset = document.getElementById('btn-reset');
-const btnCreateVersion = document.getElementById('btn-create-version');
-
-const reformatOrientation = document.getElementById('reformat-orientation');
-const reformatThickness = document.getElementById('reformat-thickness');
-const reformatMode = document.getElementById('reformat-mode');
-const addVersionPanel = document.getElementById('add-version');
-const addVersionTitle = document.getElementById('add-version-title');
-const baseSeriesSelect = document.getElementById('base-series');
-const compressMode = document.getElementById('compress-mode');
-const compressRatio = document.getElementById('compress-ratio');
-const compressRatioLabel = document.getElementById('compress-ratio-label');
-const windowPresetSelect = document.getElementById('window-preset');
-const versionSuffixPreview = document.getElementById('version-suffix-preview');
 
 // State ---------------------------------------------------------------------
 let state = 'idle'; // 'idle' | 'inspected' | 'processing' | 'done'
@@ -48,10 +43,9 @@ let pending = null;
 let anonOutput = null;
 let windowPresets = {};
 let studyMeta = null; // { studies: [{ ..., series: [...] }, ...] }
-let selectedStudyIndex = null;
-let selectedSeriesIndex = null;
 let viewerContext = null; // { studyIdx, seriesIdx, folder } for Save
 let viewerState = null;   // latest { isVolume, orientation, slabMm, center, width }
+let trimCount = 0;
 
 // Helpers -------------------------------------------------------------------
 function write(msg) {
@@ -94,78 +88,6 @@ function appendOutputSuffix(basePath, suffix, kind) {
 
 function deriveAnonPath(inputPath, kind) {
   return appendOutputSuffix(inputPath, 'anon', kind);
-}
-
-// Version configuration -----------------------------------------------------
-function parseThickness(raw) {
-  raw = String(raw || '').trim();
-  if (!raw) return null;
-  if (raw.includes('/')) {
-    const [t, s] = raw.split('/').map((v) => parseFloat(v.trim()));
-    if (Number.isFinite(t) && Number.isFinite(s) && t > 0 && s > 0) {
-      return { thickness: t, spacing: s };
-    }
-    return null;
-  }
-  const v = parseFloat(raw);
-  if (Number.isFinite(v) && v > 0) return { thickness: v, spacing: v };
-  return null;
-}
-
-function currentVersionSpec() {
-  const orient = reformatOrientation.value;
-  const preset = windowPresetSelect.value;
-  const thickness = parseThickness(reformatThickness.value);
-  const cmode = compressMode.value;
-  const cratio = parseFloat(compressRatio.value);
-  const spec = {};
-  if (orient && thickness) {
-    spec.reformat = {
-      orientation: orient,
-      thickness: thickness.thickness,
-      spacing: thickness.spacing,
-      mode: reformatMode.value,
-    };
-  }
-  if (preset) {
-    const p = windowPresets[preset];
-    if (p) spec.window = { center: p.center, width: p.width };
-  }
-  if (cmode === 'lossless') {
-    spec.compress = { mode: 'lossless' };
-  } else if (cmode === 'lossy' && Number.isFinite(cratio) && cratio > 1) {
-    spec.compress = { mode: 'lossy', ratio: cratio };
-  }
-  return { orient, preset, thickness, cmode, cratio, spec };
-}
-
-function currentSuffix() {
-  const { orient, preset, thickness, cmode, cratio } = currentVersionSpec();
-  const parts = [];
-  if (orient && thickness) {
-    const { thickness: t, spacing: s } = thickness;
-    const slab = t === s ? `${t}mm` : `${t}-${s}mm`;
-    parts.push(`${orient}-${slab}`);
-    const m = reformatMode.value;
-    if (m !== 'avg') parts.push(m);
-  }
-  if (preset) parts.push(preset);
-  if (cmode === 'lossless') parts.push('j2k');
-  else if (cmode === 'lossy' && Number.isFinite(cratio) && cratio > 1) parts.push(`j2k-${cratio}`);
-  return parts.join('-');
-}
-
-function updateVersionPreview() {
-  const suffix = currentSuffix();
-  if (suffix) {
-    versionSuffixPreview.textContent = '→ _' + suffix;
-    versionSuffixPreview.classList.remove('empty');
-    btnCreateVersion.disabled = false;
-  } else {
-    versionSuffixPreview.textContent = 'Pick at least one option';
-    versionSuffixPreview.classList.add('empty');
-    btnCreateVersion.disabled = true;
-  }
 }
 
 async function attachThumbnails() {
@@ -316,17 +238,6 @@ async function runStream(url, body, { sidecar = 'python' } = {}) {
   return { ...(final || {}), aggregateDrops };
 }
 
-function selectedSeries() {
-  if (selectedStudyIndex == null || selectedSeriesIndex == null) return null;
-  const st = studyMeta?.studies?.[selectedStudyIndex];
-  return st?.series?.[selectedSeriesIndex] || null;
-}
-
-baseSeriesSelect.addEventListener('change', () => {
-  const [si, i] = baseSeriesSelect.value.split(',').map((v) => parseInt(v, 10));
-  if (Number.isFinite(si) && Number.isFinite(i)) openVersionPanel(si, i);
-});
-
 // Viewer --------------------------------------------------------------------
 async function openViewerForSeries(studyIdx, seriesIdx) {
   const st = studyMeta?.studies?.[studyIdx];
@@ -336,25 +247,96 @@ async function openViewerForSeries(studyIdx, seriesIdx) {
     write('viewer bundle not loaded');
     return;
   }
-  viewerContext = { studyIdx, seriesIdx, folder: se.folder };
+  viewerContext = { studyIdx, seriesIdx, folder: se.folder, isDerived: se.kind === 'derived' };
   viewerState = null;
   viewerTitle.textContent = se.description || `Series ${seriesIdx + 1}`;
-  viewerHint.textContent = 'scroll page · drag W/L · middle pan · right zoom · A/C/S orient · [/] slab 1/2/3/5/10 mm · space reset';
+  viewerHint.textContent = se.kind === 'derived'
+    ? 'scroll page · drag W/L · middle pan · right zoom · space reset'
+    : 'scroll page · drag W/L · middle pan · right zoom · A/C/S orient · [/] slab 1/2/3/5/10 mm · space reset';
   viewerSection.hidden = false;
-  addVersionPanel.hidden = true;
+  await setupTrim(se);
   viewerSection.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   try {
-    await window.viewerAPI.open(se.folder, viewerCanvas);
+    await window.viewerAPI.open(se.folder, viewerCanvas, { forceStack: se.kind === 'derived' });
   } catch (e) {
     write(`viewer error: ${e.message || e}`);
     closeViewer();
   }
 }
 
+async function setupTrim(series) {
+  // Only show trim on multi-slice series.
+  if (!series?.slice_count || series.slice_count < 2) {
+    viewerTrim.hidden = true;
+    trimCount = 0;
+    return;
+  }
+  trimCount = series.slice_count;
+  trimStart.min = trimEnd.min = '0';
+  trimStart.max = trimEnd.max = String(trimCount - 1);
+  trimStart.value = '0';
+  trimEnd.value = String(trimCount - 1);
+  viewerTrim.hidden = false;
+  updateTrimUI();
+}
+
+function currentTrim() {
+  if (viewerTrim.hidden || !trimCount) return null;
+  const start = parseInt(trimStart.value, 10) || 0;
+  const end = parseInt(trimEnd.value, 10) || 0;
+  if (start === 0 && end === trimCount - 1) return null; // untouched
+  return { start, end };
+}
+
+function updateTrimUI() {
+  const s = parseInt(trimStart.value, 10) || 0;
+  const e = parseInt(trimEnd.value, 10) || 0;
+  // Enforce start ≤ end
+  if (s > e) {
+    if (document.activeElement === trimStart) {
+      trimEnd.value = String(s);
+    } else {
+      trimStart.value = String(e);
+    }
+  }
+  const lo = parseInt(trimStart.value, 10);
+  const hi = parseInt(trimEnd.value, 10);
+  const loPct = (lo / (trimCount - 1)) * 100;
+  const hiPct = (hi / (trimCount - 1)) * 100;
+  trimFill.style.left = `${loPct}%`;
+  trimFill.style.right = `${100 - hiPct}%`;
+  const kept = hi - lo + 1;
+  const sameAsFull = lo === 0 && hi === trimCount - 1;
+  trimLabel.textContent = sameAsFull
+    ? `All ${trimCount} slices`
+    : `Slices ${lo + 1}–${hi + 1} of ${trimCount}  ·  keeping ${kept}`;
+}
+
+function pushTrimRangeToViewer() {
+  const lo = parseInt(trimStart.value, 10);
+  const hi = parseInt(trimEnd.value, 10);
+  // Only constrain the viewer when the user has actually moved off the
+  // edges — otherwise "full range" is a no-op anyway.
+  const active = !(lo === 0 && hi === trimCount - 1);
+  window.viewerAPI?.setTrimRange?.(active ? { start: lo, end: hi } : null);
+}
+
+trimStart.addEventListener('input', () => {
+  updateTrimUI();
+  pushTrimRangeToViewer();
+  window.viewerAPI?.goToSlice?.(parseInt(trimStart.value, 10));
+});
+trimEnd.addEventListener('input', () => {
+  updateTrimUI();
+  pushTrimRangeToViewer();
+  window.viewerAPI?.goToSlice?.(parseInt(trimEnd.value, 10));
+});
+
 function closeViewer() {
   if (window.viewerAPI?.close) window.viewerAPI.close();
   viewerCanvas.innerHTML = '';
   viewerStatus.innerHTML = '';
+  viewerTrim.hidden = true;
   viewerSection.hidden = true;
   viewerContext = null;
   viewerState = null;
@@ -367,32 +349,64 @@ async function saveViewerAsVersion() {
 
   const spec = {};
   const suffixParts = [];
-  if (isVolume && orientation && slabMm) {
+  // Only include a reformat if the user actually moved off the native
+  // defaults. Otherwise saving from a CT opened axial at native thickness
+  // would produce a meaningless "same series, new UIDs" reformat — and
+  // with slab/spacing wrong during the initial first-render flash, would
+  // explode file counts.
+  if (isVolume && orientation && slabMm && !viewerState.isDefaultView) {
+    const mm = Math.round(slabMm * 10) / 10;
     spec.reformat = {
       orientation,
-      thickness: slabMm,
-      spacing: slabMm,
+      thickness: mm,
+      spacing: mm,
       mode: 'avg',
     };
-    suffixParts.push(`${orientation}-${slabMm}mm`);
+    suffixParts.push(`${orientation}-${mm}mm`);
   }
-  if (center != null && width != null) {
+  if (center != null && width != null && !viewerState.isDefaultVOI) {
     spec.window = { center: Math.round(center), width: Math.round(width) };
     suffixParts.push(`W${Math.round(center)}-${Math.round(width)}`);
   }
-  if (!spec.reformat && !spec.window) {
-    write('nothing to save — adjust orientation, slab, or window first');
+
+  const cmode = viewerCompressMode.value;
+  const cratio = parseFloat(viewerCompressRatio.value);
+  if (cmode === 'lossless') {
+    spec.compress = { mode: 'lossless' };
+    suffixParts.push('j2k');
+  } else if (cmode === 'lossy' && Number.isFinite(cratio) && cratio > 1) {
+    spec.compress = { mode: 'lossy', ratio: cratio };
+    suffixParts.push(`j2k-${cratio}`);
+  }
+
+  const trim = currentTrim();
+  if (trim) suffixParts.push(`trim-${trim.start + 1}-${trim.end + 1}`);
+
+  if (!spec.reformat && !spec.window && !spec.compress && !trim) {
+    write('nothing to save — adjust orientation, slab, window, compression, or trim first');
     return;
   }
 
-  const suffix = suffixParts.join('-');
+  const suffix = suffixParts.join('-') || 'copy';
   const output = appendOutputSuffix(folder, suffix, 'folder');
 
   processingSummary.textContent = `Saving ${suffix} version → ${output}`;
   setState('processing');
 
   try {
-    await runStream('/transform', { input: folder, output, ...spec });
+    if (trim && !spec.reformat && !spec.window && !spec.compress) {
+      // Trim only — fast path via /trim (copy subset with fresh UIDs)
+      await runStream('/trim', {
+        input: folder, output, start: trim.start, end: trim.end,
+      });
+    } else if (trim) {
+      // Combining trim with other ops isn't supported yet — fall through
+      // to /transform with the other ops and drop the trim, with a warning.
+      write('note: trim is not combined with other ops yet — saved without trim');
+      await runStream('/transform', { input: folder, output, ...spec });
+    } else {
+      await runStream('/transform', { input: folder, output, ...spec });
+    }
     await appendNewSeries(output, suffix, studyIdx);
     setState('done');
     write(`saved ${suffix}`);
@@ -405,13 +419,20 @@ async function saveViewerAsVersion() {
 btnCloseViewer.addEventListener('click', closeViewer);
 btnSaveViewer.addEventListener('click', saveViewerAsVersion);
 
+function fmtMm(mm) {
+  return (Math.round(mm * 10) / 10).toString().replace(/\.0$/, '');
+}
+
 document.addEventListener('viewer:state', (e) => {
   viewerState = e.detail;
-  const { isVolume, orientation, slabMm, center, width } = e.detail;
+  const { isVolume, orientation, slabMm, slabIsNative, center, width } = e.detail;
   const bits = [];
   if (isVolume) {
     if (orientation) bits.push(`<span class="k">View</span><span class="v">${orientation}</span>`);
-    if (slabMm != null) bits.push(`<span class="k">Slab</span><span class="v">${slabMm} mm</span>`);
+    if (slabMm != null) {
+      const label = `${fmtMm(slabMm)} mm${slabIsNative ? ' (native)' : ''}`;
+      bits.push(`<span class="k">Slab</span><span class="v">${label}</span>`);
+    }
   } else {
     bits.push('<span class="k">Mode</span><span class="v">stack</span>');
   }
@@ -424,48 +445,6 @@ document.addEventListener('viewer:state', (e) => {
 function setStudyCollapsed(studyIdx, collapsed) {
   const block = studySummaryEl.querySelector(`.study-block[data-study-idx="${studyIdx}"]`);
   if (block) block.classList.toggle('collapsed', collapsed);
-}
-
-function populateBaseSeriesSelect(studyIdx) {
-  baseSeriesSelect.innerHTML = '';
-  const st = studyMeta?.studies?.[studyIdx];
-  if (!st?.series?.length) return;
-  for (let i = 0; i < st.series.length; i++) {
-    const se = st.series[i];
-    const opt = document.createElement('option');
-    opt.value = `${studyIdx},${i}`;
-    const tech = [];
-    if (se.orientation) tech.push(se.orientation);
-    if (se.slice_thickness != null) tech.push(`${se.slice_thickness}mm`);
-    tech.push(`${se.slice_count} slice${se.slice_count === 1 ? '' : 's'}`);
-    opt.textContent = `${se.description || `series ${i + 1}`}  (${tech.join(' · ')})`;
-    baseSeriesSelect.appendChild(opt);
-  }
-}
-
-function openVersionPanel(studyIdx, seriesIdx) {
-  const st = studyMeta?.studies?.[studyIdx];
-  if (!st?.series?.[seriesIdx]) return;
-  selectedStudyIndex = studyIdx;
-  selectedSeriesIndex = seriesIdx;
-
-  populateBaseSeriesSelect(studyIdx);
-  baseSeriesSelect.value = `${studyIdx},${seriesIdx}`;
-
-  // Highlight the "+" card of the originating study; clear others.
-  for (const card of studySummaryEl.querySelectorAll('.add-card-wrap')) {
-    card.classList.toggle('selected', parseInt(card.dataset.studyIdx, 10) === studyIdx);
-  }
-
-  // Collapse any study that isn't the one the selection lives in.
-  if (studyMeta?.studies?.length) {
-    for (let i = 0; i < studyMeta.studies.length; i++) {
-      setStudyCollapsed(i, i !== studyIdx);
-    }
-  }
-  addVersionTitle.textContent = 'Create additional version';
-  addVersionPanel.hidden = false;
-  updateVersionPreview();
 }
 
 function renderStudySummary() {
@@ -555,7 +534,15 @@ function renderStudySummary() {
         const tech = [];
         if (se.modality) tech.push(se.modality);
         if (se.orientation) tech.push(se.orientation);
-        if (se.slice_thickness != null) tech.push(`${se.slice_thickness}mm`);
+        if (se.slice_thickness != null) {
+          // Show "3mm/2mm" when thickness and spacing differ (overlapping
+          // CT acquisitions are common); "3mm" when they agree or spacing
+          // is unknown. Spacing is what drives reformat math.
+          const th = se.slice_thickness;
+          const sp = se.slice_spacing;
+          if (sp != null && Math.abs(sp - th) > 0.01) tech.push(`${th}/${sp}mm`);
+          else tech.push(`${th}mm`);
+        }
         tech.push(`${se.slice_count} slice${se.slice_count === 1 ? '' : 's'}`);
         const meta = document.createElement('div');
         meta.className = 'series-meta';
@@ -587,21 +574,6 @@ function renderStudySummary() {
 
         ul.appendChild(li);
       }
-
-      // "+" card to open the Create panel without preselecting a specific
-      // series beyond this study's first one.
-      const addLi = document.createElement('li');
-      addLi.className = 'add-card-wrap';
-      addLi.dataset.studyIdx = String(si);
-      const card = document.createElement('div');
-      card.className = 'add-card';
-      card.textContent = '+';
-      const addLabel = document.createElement('div');
-      addLabel.className = 'add-card-label';
-      addLabel.textContent = 'New version';
-      addLi.append(card, addLabel);
-      addLi.addEventListener('click', () => openVersionPanel(si, 0));
-      ul.appendChild(addLi);
 
       body.appendChild(ul);
     }
@@ -650,18 +622,12 @@ async function runAnonymise() {
 
     anonOutput = result.output;
     studyMeta = result.summary || null;
-    selectedStudyIndex = null;
-    selectedSeriesIndex = null;
-    addVersionPanel.hidden = true;
 
     // Node doesn't render thumbnails — ask Python to do a batch pass on the
     // anonymised series folders, then merge results into the summary.
     await attachThumbnails();
 
     renderStudySummary();
-    // Panel stays hidden — user explicitly clicks a "+" card to open it.
-    addVersionPanel.hidden = true;
-    updateVersionPreview();
 
     doneTitle.textContent = result.error_count > 0
       ? `Anonymised — ${result.count} written, ${result.error_count} failed`
@@ -671,34 +637,6 @@ async function runAnonymise() {
   } catch (e) {
     write(`error: ${e.message || e}`);
     setState('inspected');
-  }
-}
-
-// Additional versions -------------------------------------------------------
-async function createVersion() {
-  if (!anonOutput) return;
-  const suffix = currentSuffix();
-  if (!suffix) return;
-  const { spec } = currentVersionSpec();
-
-  const series = selectedSeries();
-  const inputPath = series?.folder || anonOutput;
-  const output = appendOutputSuffix(inputPath, suffix, 'folder');
-  processingSummary.textContent = `Creating ${suffix} version → ${output}`;
-  setState('processing');
-
-  try {
-    await runStream('/transform', { input: inputPath, output, ...spec });
-    write(`created ${suffix} → ${output}`);
-
-    // Refresh summary: scan the new folder, build a series entry, append it
-    // under the same study the version came from, and re-render.
-    await appendNewSeries(output, suffix, selectedStudyIndex);
-
-    setState('done');
-  } catch (e) {
-    write(`error: ${e.message || e}`);
-    setState('done');
   }
 }
 
@@ -720,6 +658,7 @@ async function appendNewSeries(folder, label, studyIdx) {
       modality: info.modality,
       orientation: info.orientation,
       slice_thickness: info.slice_thickness,
+      slice_spacing: info.slice_spacing,
       slice_count: info.slice_count,
       total_bytes: info.total_bytes,
       transfer_syntax: info.transfer_syntax,
@@ -732,11 +671,6 @@ async function appendNewSeries(folder, label, studyIdx) {
     st.series_count = st.series.length;
     st.total_slices = (st.total_slices || 0) + (info.slice_count || 0);
     renderStudySummary();
-    // Re-apply selection highlight to the study the version came from.
-    const addCard = studySummaryEl.querySelector(
-      `.add-card-wrap[data-study-idx="${studyIdx}"]`,
-    );
-    if (addCard) addCard.classList.add('selected');
   } catch (e) {
     console.warn('[renderer] series-info fetch failed:', e);
   }
@@ -750,25 +684,22 @@ async function loadPresets() {
   windowPresets = await res.json();
   for (const name of Object.keys(windowPresets)) {
     const p = windowPresets[name];
-    const label = `${name} (C ${p.center} / W ${p.width})`;
-
-    const opt1 = document.createElement('option');
-    opt1.value = name;
-    opt1.textContent = label;
-    windowPresetSelect.appendChild(opt1);
-
-    const opt2 = document.createElement('option');
-    opt2.value = name;
-    opt2.textContent = label;
-    viewerPresetSelect.appendChild(opt2);
+    const opt = document.createElement('option');
+    opt.value = name;
+    opt.textContent = `${name} (C ${p.center} / W ${p.width})`;
+    viewerPresetSelect.appendChild(opt);
   }
 }
+
+viewerCompressMode.addEventListener('change', () => {
+  viewerCompressRatioLabel.hidden = viewerCompressMode.value !== 'lossy';
+});
 
 viewerPresetSelect.addEventListener('change', () => {
   const v = viewerPresetSelect.value;
   if (!v) return;
   if (v === '__reset') {
-    window.viewerAPI?.resetWindow?.();
+    window.viewerAPI?.reset?.();
   } else {
     const p = windowPresets[v];
     if (p) window.viewerAPI?.applyWindow?.(p.center, p.width);
@@ -800,18 +731,14 @@ drop.addEventListener('drop', (e) => {
   inspect(p);
 });
 
-// Buttons & config listeners -----------------------------------------------
+// Buttons -------------------------------------------------------------------
 btnAnonymise.addEventListener('click', runAnonymise);
 btnCancelInspect.addEventListener('click', () => { pending = null; setState('idle'); });
-btnCreateVersion.addEventListener('click', createVersion);
 btnReset.addEventListener('click', () => {
   closeViewer();
   pending = null;
   anonOutput = null;
   studyMeta = null;
-  selectedStudyIndex = null;
-  selectedSeriesIndex = null;
-  addVersionPanel.hidden = true;
   dropDetails.hidden = true;
   dropDetails.open = false;
   dropDetailsBody.innerHTML = '';
@@ -824,14 +751,5 @@ btnRevealMain.addEventListener('click', () => {
   if (anonOutput) window.shellBridge.reveal(anonOutput);
 });
 
-for (const el of [reformatOrientation, reformatThickness, reformatMode, windowPresetSelect, compressMode, compressRatio]) {
-  el.addEventListener('input', updateVersionPreview);
-  el.addEventListener('change', updateVersionPreview);
-}
-
-compressMode.addEventListener('change', () => {
-  compressRatioLabel.hidden = compressMode.value !== 'lossy';
-});
-
 setState('idle');
-loadPresets().then(updateVersionPreview);
+loadPresets();

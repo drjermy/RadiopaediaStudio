@@ -30,20 +30,70 @@ let currentOrientation = null;
 let keyHandler = null;
 let wheelHandler = null;
 let voiHandler = null;
+let cameraHandler = null;
+let trimRange = null; // { start, end } inclusive; null = unrestricted
+let clampInFlight = false;
 let slabIdx = 0;
+
+function nativeSpacingMm() {
+  if (!currentViewport) return 1;
+  try { return currentViewport.getSpacingInNormalDirection?.() ?? 1; } catch { return 1; }
+}
+
+function effectiveSlab() {
+  // Requested thickness is floored to the native voxel spacing along the
+  // current slice normal — we can't meaningfully render thinner than the
+  // acquisition. Reports both the effective mm and whether we hit the floor.
+  const requested = SLAB_STEPS[slabIdx];
+  const native = nativeSpacingMm();
+  const mm = Math.max(requested, native);
+  return { requested, native, mm, isNative: requested <= native };
+}
+
+function pickDefaultSlabIdx() {
+  // Start at the smallest SLAB_STEPS entry ≥ native voxel spacing — so
+  // a 3 mm CT opens at 3 mm by default, not a misleading 1 mm.
+  const native = nativeSpacingMm();
+  for (let i = 0; i < SLAB_STEPS.length; i++) {
+    if (SLAB_STEPS[i] >= native) return i;
+  }
+  return SLAB_STEPS.length - 1;
+}
+
+// Remember the first seen VOI so we can tell "untouched" from "user
+// dragged W/L back to the same numbers" — used by Save.
+let initialVOI = null;
 
 function emitState() {
   if (!currentViewport) return;
   const props = currentViewport.getProperties?.() ?? {};
   const voi = props.voiRange || {};
   const hasVOI = voi.upper != null && voi.lower != null;
+  const slab = currentIsVolume ? effectiveSlab() : null;
+
+  const center = hasVOI ? (voi.upper + voi.lower) / 2 : null;
+  const width  = hasVOI ? voi.upper - voi.lower        : null;
+  if (hasVOI && !initialVOI) initialVOI = { center, width };
+  const isDefaultVOI = hasVOI && initialVOI
+    ? Math.abs(center - initialVOI.center) < 0.5
+      && Math.abs(width - initialVOI.width) < 0.5
+    : true;
+
+  const isDefaultView = currentIsVolume
+    ? currentOrientation === OrientationAxis.AXIAL
+      && slab?.isNative === true
+    : true;
+
   document.dispatchEvent(new CustomEvent('viewer:state', {
     detail: {
       isVolume: currentIsVolume,
       orientation: currentOrientation,
-      slabMm: SLAB_STEPS[slabIdx],
-      center: hasVOI ? (voi.upper + voi.lower) / 2 : null,
-      width: hasVOI ? voi.upper - voi.lower : null,
+      slabMm: slab?.mm ?? null,
+      slabIsNative: slab?.isNative ?? false,
+      isDefaultView,
+      center,
+      width,
+      isDefaultVOI,
     },
   }));
 }
@@ -100,10 +150,25 @@ async function loadStack(folder) {
   return files.map((p) => `wadouri:http://127.0.0.1:${port}/files?path=${encodeURIComponent(p)}`);
 }
 
-async function open(folder, container) {
+async function open(folder, container, opts = {}) {
+  const { forceStack = false } = opts;
   await ensureInitialized();
 
+  // Tear down the previous session cleanly. Without removing the viewport
+  // from the tool group first, the tool group holds a dead reference and
+  // re-enabling with the same viewport id leaves a grey canvas.
+  const tg = ToolGroupManager.getToolGroup(TOOL_GROUP_ID);
+  if (renderingEngine) {
+    try { tg?.removeViewports(RENDERING_ENGINE_ID, VIEWPORT_ID); } catch {}
+    try { renderingEngine.destroy(); } catch {}
+    renderingEngine = null;
+  }
+
   element = container;
+  // Clear any canvas/wrapper left behind by a previous engine — if the
+  // element was hidden during destroy, Cornerstone's cleanup may skip
+  // detaching the <canvas> and the new engine renders to a dead node.
+  element.innerHTML = '';
   element.style.width = '100%';
   element.style.height = '100%';
   element.oncontextmenu = (e) => e.preventDefault();
@@ -112,17 +177,19 @@ async function open(folder, container) {
   // zero dimensions in the current frame.
   await new Promise((r) => requestAnimationFrame(r));
 
-  if (renderingEngine) renderingEngine.destroy();
   renderingEngine = new RenderingEngine(RENDERING_ENGINE_ID);
 
   const imageIds = await loadStack(folder);
 
   // Try volume viewport first — gives us live axial/coronal/sagittal
   // reformats via keyboard shortcuts. Falls back to stack viewer for
-  // single-image series or volumes that won't build (mixed orientations).
+  // single-image series, volumes that won't build (mixed orientations),
+  // or any series the caller asked to view stack-only (e.g. a derived
+  // series that's already been reformatted — re-reformatting it is more
+  // confusing than useful).
   let viewport = null;
   let asVolume = false;
-  if (imageIds.length >= 3) {
+  if (imageIds.length >= 3 && !forceStack) {
     try {
       renderingEngine.enableElement({
         viewportId: VIEWPORT_ID,
@@ -161,12 +228,14 @@ async function open(folder, container) {
   currentViewport = viewport;
   currentIsVolume = asVolume;
   currentOrientation = asVolume ? OrientationAxis.AXIAL : null;
+  initialVOI = null;
 
   renderingEngine.resize(true, true);
   viewport.render();
 
-  const tg = ToolGroupManager.getToolGroup(TOOL_GROUP_ID);
-  tg.addViewport(VIEWPORT_ID, RENDERING_ENGINE_ID);
+  // Reattach the tool group to the freshly-enabled viewport — we removed
+  // any previous association at teardown, so this is the single add.
+  tg?.addViewport(VIEWPORT_ID, RENDERING_ENGINE_ID);
 
   if (resizeObserver) resizeObserver.disconnect();
   resizeObserver = new ResizeObserver(() => {
@@ -179,9 +248,24 @@ async function open(folder, container) {
   if (voiHandler) element.removeEventListener(cornerstone.Enums.Events.VOI_MODIFIED, voiHandler);
   voiHandler = () => emitState();
   element.addEventListener(cornerstone.Enums.Events.VOI_MODIFIED, voiHandler);
-  // Also emit once images have rendered — gives the status line an initial
-  // W/L reading from whatever the default presentation was.
-  element.addEventListener(cornerstone.Enums.Events.IMAGE_RENDERED, () => emitState(), { once: true });
+
+  if (cameraHandler) element.removeEventListener(cornerstone.Enums.Events.CAMERA_MODIFIED, cameraHandler);
+  cameraHandler = () => enforceTrimClamp();
+  element.addEventListener(cornerstone.Enums.Events.CAMERA_MODIFIED, cameraHandler);
+  // After the first render, the viewport's native spacing is queryable.
+  // Pick the slab default now and emit state so the UI reflects reality.
+  element.addEventListener(
+    cornerstone.Enums.Events.IMAGE_RENDERED,
+    () => {
+      if (currentIsVolume) {
+        slabIdx = pickDefaultSlabIdx();
+        applySlab();
+      } else {
+        emitState();
+      }
+    },
+    { once: true },
+  );
 
   // In volume mode with a thick slab, take over the wheel so each notch
   // advances by the slab thickness (3 mm slab → 3 mm step). At 1 mm we
@@ -191,14 +275,11 @@ async function open(folder, container) {
   if (wheelHandler) element.removeEventListener('wheel', wheelHandler, true);
   wheelHandler = (e) => {
     if (!currentIsVolume || !currentViewport) return;
-    if (slabIdx === 0) return; // native scroll
+    const { mm, isNative } = effectiveSlab();
+    if (isNative) return; // native scroll — let StackScrollTool handle it
     e.preventDefault();
     e.stopPropagation();
-    const mm = SLAB_STEPS[slabIdx];
-    let normalSpacing = 1;
-    try {
-      normalSpacing = currentViewport.getSpacingInNormalDirection?.() ?? 1;
-    } catch {}
+    const normalSpacing = nativeSpacingMm();
     const steps = Math.max(1, Math.round(mm / normalSpacing));
     const dir = e.deltaY > 0 ? 1 : -1;
     currentViewport.scroll(dir * steps);
@@ -212,9 +293,10 @@ async function open(folder, container) {
   }
 
   // Keyboard shortcuts — only active when the viewer is open.
-  // a/c/s: axial/coronal/sagittal. ]/[ step slab thickness through 1/3/5/10 mm.
+  // a/c/s: axial/coronal/sagittal. ]/[ step slab thickness through 1/2/3/5/10 mm.
+  // Slab default starts at index 0; we re-pick it after the first render
+  // (the viewport's getSpacingInNormalDirection isn't reliable until then).
   slabIdx = 0;
-  applySlab();
   if (keyHandler) document.removeEventListener('keydown', keyHandler);
   keyHandler = (e) => {
     if (!currentIsVolume || !currentViewport) return;
@@ -241,7 +323,7 @@ async function open(folder, container) {
       applySlab();
     } else if (e.key === ' ') {
       e.preventDefault();
-      resetWindow();
+      resetView();
     }
   };
   document.addEventListener('keydown', keyHandler);
@@ -249,11 +331,12 @@ async function open(folder, container) {
 
 function applySlab() {
   if (!currentViewport || !currentIsVolume) return;
-  const mm = SLAB_STEPS[slabIdx];
-  // At 1 mm, render as a normal slice via composite blend. Above 1 mm,
-  // average the slab so the intensity is meaningful (neutral choice vs
-  // MIP/MinIP which have their own uses).
-  if (mm <= 1) {
+  const { mm, isNative } = effectiveSlab();
+  // If the requested thickness is at or below the native voxel, render as
+  // a composite (single-voxel) slice — averaging below native pretends to
+  // a resolution we don't have. Above native, AVERAGE_INTENSITY_BLEND
+  // gives a meaningful slab projection.
+  if (isNative) {
     currentViewport.setBlendMode(BlendModes.COMPOSITE);
     currentViewport.setSlabThickness(0);
   } else {
@@ -296,6 +379,11 @@ function close() {
     try { element.removeEventListener(cornerstone.Enums.Events.VOI_MODIFIED, voiHandler); } catch {}
     voiHandler = null;
   }
+  if (cameraHandler && element) {
+    try { element.removeEventListener(cornerstone.Enums.Events.CAMERA_MODIFIED, cameraHandler); } catch {}
+    cameraHandler = null;
+  }
+  trimRange = null;
   if (renderingEngine) {
     renderingEngine.destroy();
     renderingEngine = null;
@@ -314,11 +402,92 @@ function applyWindow(center, width) {
   emitState();
 }
 
-function resetWindow() {
+function resetView() {
   if (!currentViewport) return;
+  // Reset VOI and slab together — the user expects "reset" to give back
+  // the same image they saw when the series first opened, which means
+  // default window AND the starting-point slab (native spacing).
   currentViewport.resetProperties();
-  currentViewport.render();
-  emitState();
+  if (currentIsVolume) {
+    slabIdx = pickDefaultSlabIdx();
+    applySlab();
+  } else {
+    currentViewport.render();
+    emitState();
+  }
 }
 
-window.viewerAPI = { open, close, applyWindow, resetWindow };
+function setTrimRange(range) {
+  trimRange = range && Number.isFinite(range.start) && Number.isFinite(range.end)
+    ? { start: range.start, end: range.end }
+    : null;
+  enforceTrimClamp();
+}
+
+function enforceTrimClamp() {
+  if (!trimRange || !currentViewport || clampInFlight) return;
+  const current = currentViewport.getSliceIndex?.();
+  if (current == null) return;
+  let target = null;
+  if (current < trimRange.start) target = trimRange.start;
+  else if (current > trimRange.end) target = trimRange.end;
+  if (target == null) return;
+  clampInFlight = true;
+  try { goToSlice(target); } finally { clampInFlight = false; }
+}
+
+function goToSlice(idx) {
+  if (!currentViewport || !Number.isFinite(idx)) return;
+  const target = Math.round(idx);
+  try {
+    const v = currentViewport;
+    // Stack mode is simple — setImageIdIndex is exposed.
+    if (typeof v.setImageIdIndex === 'function') {
+      v.setImageIdIndex(target);
+      v.render();
+      return;
+    }
+    // Volume mode: scroll returns but doesn't guarantee the target renders
+    // when called with large deltas. Instead move the camera's focalPoint
+    // along the slice normal so the target slice is exactly at focus.
+    if (currentIsVolume && typeof v.getCamera === 'function') {
+      const camera = v.getCamera();
+      const normal = camera.viewPlaneNormal;
+      if (!normal) return;
+      const spacing = nativeSpacingMm();
+      // Total slices along this orientation — infer from imageIds length,
+      // which matches the acquisition count in the common case.
+      const imageIds = v.getImageIds?.() ?? [];
+      const n = imageIds.length || 1;
+      const clamped = Math.max(0, Math.min(n - 1, target));
+      // Compute the camera shift needed. We use the current focalPoint as
+      // reference, derive where slice 0 sits, then jump to the target slice.
+      const currentSlice = v.getSliceIndex?.() ?? 0;
+      const delta = (clamped - currentSlice) * spacing;
+      const fp = camera.focalPoint;
+      const pos = camera.position;
+      const newFocal = [
+        fp[0] + normal[0] * delta,
+        fp[1] + normal[1] * delta,
+        fp[2] + normal[2] * delta,
+      ];
+      const newPos = [
+        pos[0] + normal[0] * delta,
+        pos[1] + normal[1] * delta,
+        pos[2] + normal[2] * delta,
+      ];
+      v.setCamera({ ...camera, focalPoint: newFocal, position: newPos });
+      v.render();
+      return;
+    }
+    // Fallback
+    const current = v.getCurrentImageIdIndex?.() ?? 0;
+    const delta = target - current;
+    if (delta !== 0) v.scroll(delta, false);
+    v.render();
+  } catch (e) {
+    console.warn('[viewer] goToSlice failed:', e);
+  }
+}
+
+window.viewerAPI = { open, close, applyWindow, reset: resetView, goToSlice, setTrimRange };

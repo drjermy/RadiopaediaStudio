@@ -72,6 +72,13 @@ class CompressSpec(BaseModel):
     ratio: float | None = None
 
 
+class TrimRequest(BaseModel):
+    input: str
+    output: str
+    start: int  # inclusive 0-based index into sorted series
+    end: int    # inclusive
+
+
 class TransformRequest(BaseModel):
     input: str
     output: str
@@ -188,19 +195,21 @@ def series_info(req: SeriesInfoRequest) -> dict:
     if not desc and _tag(first, 'SeriesDescription'):
         desc = str(first.SeriesDescription).strip()
 
-    thickness = None
-    if _tag(first, 'SliceThickness') is not None:
+    def _safe(attr):
+        if _tag(first, attr) is None:
+            return None
         try:
-            thickness = float(first.SliceThickness)
+            return float(getattr(first, attr))
         except (ValueError, TypeError):
-            thickness = None
+            return None
 
     return {
         'folder': str(folder),
         'description': desc,
         'modality': str(first.Modality) if _tag(first, 'Modality') else None,
         'orientation': classify_orientation(_tag(first, 'ImageOrientationPatient')),
-        'slice_thickness': thickness,
+        'slice_thickness': _safe('SliceThickness'),
+        'slice_spacing': _safe('SpacingBetweenSlices'),
         'slice_count': len(files),
         'total_bytes': total_bytes,
         'transfer_syntax': ts_info,
@@ -352,6 +361,64 @@ def window(req: WindowRequest) -> StreamingResponse:
         return StreamingResponse(gen_folder(), media_type='application/x-ndjson')
 
     raise HTTPException(status_code=400, detail=f'input not found: {in_path}')
+
+
+@app.post('/trim')
+def trim(req: TrimRequest) -> StreamingResponse:
+    """Copy a contiguous sub-range of DICOM files into a new folder with a
+    fresh SeriesInstanceUID + fresh SOPInstanceUIDs, preserving Study +
+    FrameOfReference UIDs so it still groups under the same case."""
+    import pydicom
+    from pydicom.uid import generate_uid
+
+    in_path = Path(req.input)
+    out_path = Path(req.output)
+    if not in_path.is_dir():
+        raise HTTPException(status_code=400, detail=f'not a directory: {in_path}')
+
+    files = sorted(find_dicoms(in_path))
+    start = max(0, req.start)
+    end = min(len(files) - 1, req.end)
+    if end < start:
+        raise HTTPException(status_code=400, detail='end < start')
+    subset = files[start:end + 1]
+    print(
+        f'[trim] in={in_path} found={len(files)} start={start} end={end} '
+        f'subset={len(subset)} → out={out_path}',
+        flush=True,
+    )
+
+    def gen():
+        yield _line({'type': 'start', 'mode': 'folder', 'total': len(subset), 'output': str(out_path)})
+        count = 0
+        error_count = 0
+        series_remap: dict[str, str] = {}
+
+        def remap_series(orig):
+            if orig not in series_remap:
+                series_remap[orig] = generate_uid(prefix='2.25.')
+            return series_remap[orig]
+
+        for src in subset:
+            rel = src.relative_to(in_path)
+            dst = out_path / rel
+            try:
+                ds = pydicom.dcmread(src)
+                if 'SeriesInstanceUID' in ds:
+                    ds.SeriesInstanceUID = remap_series(ds.SeriesInstanceUID)
+                ds.SOPInstanceUID = generate_uid(prefix='2.25.')
+                if hasattr(ds, 'file_meta'):
+                    ds.file_meta.MediaStorageSOPInstanceUID = ds.SOPInstanceUID
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                ds.save_as(dst, enforce_file_format=True)
+                count += 1
+                yield _line({'type': 'file', 'input': str(src), 'output': str(dst)})
+            except Exception as e:
+                error_count += 1
+                yield _line({'type': 'error', 'input': str(src), 'error': f'{type(e).__name__}: {e}'})
+        yield _line({'type': 'done', 'count': count, 'error_count': error_count, 'output': str(out_path)})
+
+    return StreamingResponse(gen(), media_type='application/x-ndjson')
 
 
 @app.post('/transform')
