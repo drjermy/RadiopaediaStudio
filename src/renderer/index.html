@@ -200,6 +200,13 @@
       color: #555;
       font-size: 12px;
       position: relative;
+      border-radius: 8px;
+      border: 2px solid transparent;
+      transition: border-color 0.12s, background 0.12s;
+    }
+    .study-summary .series-list li.viewable { cursor: pointer; }
+    .study-summary .series-list li.viewable:hover {
+      background: rgba(127, 127, 127, 0.08);
     }
     .study-summary .series-list .thumb,
     .study-summary .series-list .thumb-placeholder {
@@ -302,6 +309,36 @@
       align-items: baseline;
       gap: 12px;
     }
+
+    /* Viewer section (inline inside the Done panel, below the thumbnails) */
+    #viewer-section {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-top: 4px;
+    }
+    .viewer-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 12px;
+    }
+    .viewer-header h2 {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 600;
+    }
+    .viewer-hint {
+      font-size: 11px;
+      color: #888;
+    }
+    #viewer-canvas {
+      min-height: 500px;
+      background: #000;
+      border-radius: 6px;
+      position: relative;
+    }
+    #viewer-canvas > * { width: 100%; height: 100%; }
     .drop-details {
       font-size: 12px;
     }
@@ -459,6 +496,15 @@
       </details>
       <div id="study-summary" class="study-summary" hidden></div>
 
+      <div id="viewer-section" hidden>
+        <div class="viewer-header">
+          <h2 id="viewer-title">Viewer</h2>
+          <button id="btn-close-viewer">Close</button>
+        </div>
+        <div id="viewer-hint" class="viewer-hint"></div>
+        <div id="viewer-canvas"></div>
+      </div>
+
       <div class="add-version" id="add-version" hidden>
         <h3 id="add-version-title">Create additional version</h3>
 
@@ -534,5 +580,6 @@
   <div id="log"></div>
 
   <script src="./renderer.js"></script>
+  <script type="module" src="./viewer.bundle.js"></script>
 </body>
 </html>

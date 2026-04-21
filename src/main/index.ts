@@ -25,7 +25,7 @@ async function createWindow(): Promise<void> {
     },
   });
   await mainWindow.loadFile(path.join(rendererRoot, 'index.html'));
-  if (process.env.DEVTOOLS === '1') {
+  if (!app.isPackaged || process.env.DEVTOOLS === '1') {
     mainWindow.webContents.openDevTools({ mode: 'detach' });
   }
 }

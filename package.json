@@ -6,9 +6,10 @@
   "scripts": {
     "build:backend": "cd backend && .venv/bin/pyinstaller --noconfirm --clean backend.spec",
     "build:node": "cd backend-js && npm install --omit=dev",
-    "build:frontend": "tsc -p tsconfig.json",
+    "build:viewer": "node scripts/build-viewer.mjs",
+    "build:frontend": "tsc -p tsconfig.json && npm run build:viewer",
     "build": "npm run build:frontend",
-    "dev": "tsc -p tsconfig.json && electron .",
+    "dev": "npm run build:frontend && electron .",
     "pack": "npm run build:backend && npm run build:node && npm run build:frontend && electron-builder --mac --dir",
     "dist": "npm run build:backend && npm run build:node && npm run build:frontend && electron-builder --mac"
   },
@@ -16,6 +17,13 @@
     "@types/node": "^20.11.0",
     "electron": "^30.0.0",
     "electron-builder": "^24.13.3",
+    "esbuild": "^0.28.0",
     "typescript": "^5.4.0"
+  },
+  "dependencies": {
+    "@cornerstonejs/core": "^4.22.2",
+    "@cornerstonejs/dicom-image-loader": "^4.22.2",
+    "@cornerstonejs/tools": "^4.22.2",
+    "dicom-parser": "^1.8.21"
   }
 }

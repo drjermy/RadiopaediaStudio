@@ -3,6 +3,11 @@ const drop = document.getElementById('drop');
 const panelInspected = document.getElementById('panel-inspected');
 const panelProcessing = document.getElementById('panel-processing');
 const panelDone = document.getElementById('panel-done');
+const viewerSection = document.getElementById('viewer-section');
+const viewerCanvas = document.getElementById('viewer-canvas');
+const viewerTitle = document.getElementById('viewer-title');
+const viewerHint = document.getElementById('viewer-hint');
+const btnCloseViewer = document.getElementById('btn-close-viewer');
 const log = document.getElementById('log');
 
 const inspectedTitle = document.getElementById('inspected-title');
@@ -318,6 +323,37 @@ baseSeriesSelect.addEventListener('change', () => {
   if (Number.isFinite(si) && Number.isFinite(i)) openVersionPanel(si, i);
 });
 
+// Viewer --------------------------------------------------------------------
+async function openViewerForSeries(studyIdx, seriesIdx) {
+  const st = studyMeta?.studies?.[studyIdx];
+  const se = st?.series?.[seriesIdx];
+  if (!se?.folder) return;
+  if (!window.viewerAPI?.open) {
+    write('viewer bundle not loaded');
+    return;
+  }
+  viewerTitle.textContent = se.description || `Series ${seriesIdx + 1}`;
+  viewerHint.textContent = 'Scroll to page through slices · drag to window/level · middle-click pan · right-click zoom';
+  viewerSection.hidden = false;
+  // Hide the Create panel while viewing so the layout doesn't compete.
+  addVersionPanel.hidden = true;
+  viewerSection.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  try {
+    await window.viewerAPI.open(se.folder, viewerCanvas);
+  } catch (e) {
+    write(`viewer error: ${e.message || e}`);
+    closeViewer();
+  }
+}
+
+function closeViewer() {
+  if (window.viewerAPI?.close) window.viewerAPI.close();
+  viewerCanvas.innerHTML = '';
+  viewerSection.hidden = true;
+}
+
+btnCloseViewer.addEventListener('click', closeViewer);
+
 function setStudyCollapsed(studyIdx, collapsed) {
   const block = studySummaryEl.querySelector(`.study-block[data-study-idx="${studyIdx}"]`);
   if (block) block.classList.toggle('collapsed', collapsed);
@@ -420,6 +456,12 @@ function renderStudySummary() {
         li.dataset.studyIdx = String(si);
         li.dataset.seriesIdx = String(i);
         if (se.kind === 'derived') li.classList.add('derived');
+        // Thumbnails are clickable again — now they open the viewer (not
+        // the Create panel). The "+" card is still the only way to create.
+        if (se.folder) {
+          li.classList.add('viewable');
+          li.addEventListener('click', () => openViewerForSeries(si, i));
+        }
 
         if (se.thumbnail) {
           const img = document.createElement('img');
@@ -680,6 +722,7 @@ btnAnonymise.addEventListener('click', runAnonymise);
 btnCancelInspect.addEventListener('click', () => { pending = null; setState('idle'); });
 btnCreateVersion.addEventListener('click', createVersion);
 btnReset.addEventListener('click', () => {
+  closeViewer();
   pending = null;
   anonOutput = null;
   studyMeta = null;

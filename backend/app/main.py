@@ -12,8 +12,8 @@ import json
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from app.anonymizer import find_dicoms, is_dicom_file, iter_scrub_folder, scrub_file
@@ -111,6 +111,29 @@ def _line(obj: dict) -> bytes:
 @app.get('/health')
 def health() -> dict:
     return {'status': 'ok'}
+
+
+@app.get('/files')
+def serve_file(path: str = Query(...)) -> FileResponse:
+    """Stream a single file. Used by the renderer's Cornerstone viewer to
+    load DICOMs off the user's local filesystem via wadouri:http://…"""
+    p = Path(path)
+    if not p.is_file():
+        raise HTTPException(status_code=404, detail=f'not a file: {path}')
+    return FileResponse(p, media_type='application/dicom')
+
+
+@app.get('/files/list')
+def list_files(folder: str = Query(...)) -> dict:
+    """Return the list of DICOM files in `folder`, sorted. Viewer uses
+    these to build the stack. Filename order is a reasonable proxy for
+    slice order for most PACS exports; Cornerstone re-sorts by
+    ImagePositionPatient on load anyway."""
+    f = Path(folder)
+    if not f.is_dir():
+        raise HTTPException(status_code=400, detail=f'not a directory: {folder}')
+    paths = [str(p) for p in sorted(find_dicoms(f))]
+    return {'folder': str(f), 'files': paths}
 
 
 @app.get('/window/presets')

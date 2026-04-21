@@ -16,3 +16,9 @@ backend/**/*.egg-info/
 backend/build/
 backend/dist/
 .pytest_cache/
+
+# Bundled viewer output (colocated with src/renderer/index.html so the
+# file:// script tag resolves cleanly in the packaged app)
+src/renderer/viewer.bundle.js
+src/renderer/*.wasm
+src/renderer/decodeImageFrameWorker.js
