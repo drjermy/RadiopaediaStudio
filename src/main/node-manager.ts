@@ -47,18 +47,18 @@ async function waitForHealth(port: number, timeoutMs = 15000): Promise<void> {
 }
 
 function resolveServerDir(roots: NodeBackendRoots): string {
-  if (roots.isPackaged) {
-    // When packaged: bundled alongside Python as an extra resource.
-    const packed = path.join(roots.resourcesPath, 'backend-js');
-    if (!existsSync(path.join(packed, 'server.mjs'))) {
-      throw new Error(`bundled node sidecar not found at ${packed}`);
-    }
-    return packed;
+  const dir = roots.isPackaged
+    ? path.join(roots.resourcesPath, 'backend-js')
+    : path.join(roots.projectRoot, 'backend-js');
+  if (!existsSync(path.join(dir, 'server.mjs'))) {
+    throw new Error(`node sidecar not found at ${dir}`);
   }
-  const dir = path.join(roots.projectRoot, 'backend-js');
   if (!existsSync(path.join(dir, 'node_modules'))) {
     throw new Error(
-      `node sidecar deps not installed. Run: cd backend-js && npm install`,
+      `node sidecar deps missing at ${dir}. ` +
+        (roots.isPackaged
+          ? 'Packaged build did not bundle backend-js/node_modules'
+          : 'Run: cd backend-js && npm install'),
     );
   }
   return dir;
@@ -68,19 +68,18 @@ export async function startNodeSidecar(roots: NodeBackendRoots): Promise<NodeBac
   const port = await pickFreePort();
   const cwd = resolveServerDir(roots);
 
-  // Use the same Node binary running Electron — available as process.execPath
-  // in main, but we pass the system 'node' here for dev mode portability.
-  // electron itself *can* run mjs via `--experimental-node-api` etc., but
-  // spawning system node is simpler and already present in dev.
-  const nodeBin = process.execPath.endsWith('Electron') ? 'node' : process.execPath;
-
-  const child = spawn(nodeBin, ['server.mjs', '--port', String(port)], {
-    cwd,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    // Electron sets ELECTRON_RUN_AS_NODE=1 implicitly for the Node binary it
-    // spawns; unset so we don't confuse a system node.
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: undefined },
-  });
+  // Run as Node using the Electron binary's built-in Node runtime.
+  // ELECTRON_RUN_AS_NODE=1 makes process.execPath behave like plain `node`,
+  // so we don't need to ship a separate Node binary.
+  const child = spawn(
+    process.execPath,
+    [path.join(cwd, 'server.mjs'), '--port', String(port)],
+    {
+      cwd,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
+    },
+  );
 
   child.stdout?.on('data', (d) => process.stdout.write(`[node] ${d}`));
   child.stderr?.on('data', (d) => process.stderr.write(`[node] ${d}`));

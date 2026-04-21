@@ -5,11 +5,12 @@
   "main": "dist/main/index.js",
   "scripts": {
     "build:backend": "cd backend && .venv/bin/pyinstaller --noconfirm --clean backend.spec",
+    "build:node": "cd backend-js && npm install --omit=dev",
     "build:frontend": "tsc -p tsconfig.json",
     "build": "npm run build:frontend",
     "dev": "tsc -p tsconfig.json && electron .",
-    "pack": "npm run build:backend && npm run build:frontend && electron-builder --mac --dir",
-    "dist": "npm run build:backend && npm run build:frontend && electron-builder --mac"
+    "pack": "npm run build:backend && npm run build:node && npm run build:frontend && electron-builder --mac --dir",
+    "dist": "npm run build:backend && npm run build:node && npm run build:frontend && electron-builder --mac"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",
