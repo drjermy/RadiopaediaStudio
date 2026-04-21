@@ -35,6 +35,11 @@ class ThumbnailsRequest(BaseModel):
     folders: list[str]
 
 
+class SeriesInfoRequest(BaseModel):
+    folder: str
+    label: str | None = None
+
+
 class AnonymizeRequest(BaseModel):
     input: str
     output: str
@@ -107,6 +112,61 @@ def window_presets() -> dict:
 @app.get('/reformat/options')
 def reformat_options() -> dict:
     return {'orientations': list(ORIENTATIONS), 'modes': list(REFORMAT_MODES)}
+
+
+@app.post('/series-info')
+def series_info(req: SeriesInfoRequest) -> dict:
+    """Scan a single-series folder and return summary metadata + thumbnail
+    of the middle slice. Used after a new version is created to refresh
+    the study summary with the newly-produced series."""
+    import pydicom
+    from app.anonymizer import classify_orientation
+    from app.thumbnails import make_thumbnail
+
+    folder = Path(req.folder)
+    if not folder.is_dir():
+        raise HTTPException(status_code=400, detail=f'not a directory: {folder}')
+
+    files = sorted(find_dicoms(folder))
+    if not files:
+        return {
+            'folder': str(folder),
+            'description': req.label,
+            'slice_count': 0,
+            'thumbnail': None,
+        }
+
+    first = pydicom.dcmread(files[0])
+    middle = pydicom.dcmread(files[len(files) // 2])
+    thumb = None
+    try:
+        thumb = make_thumbnail(middle)
+    except Exception:
+        pass
+
+    def _tag(ds, kw):
+        return ds.get(kw, None)
+
+    desc = req.label
+    if not desc and _tag(first, 'SeriesDescription'):
+        desc = str(first.SeriesDescription).strip()
+
+    thickness = None
+    if _tag(first, 'SliceThickness') is not None:
+        try:
+            thickness = float(first.SliceThickness)
+        except (ValueError, TypeError):
+            thickness = None
+
+    return {
+        'folder': str(folder),
+        'description': desc,
+        'modality': str(first.Modality) if _tag(first, 'Modality') else None,
+        'orientation': classify_orientation(_tag(first, 'ImageOrientationPatient')),
+        'slice_thickness': thickness,
+        'slice_count': len(files),
+        'thumbnail': thumb,
+    }
 
 
 @app.post('/thumbnails')

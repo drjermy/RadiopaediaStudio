@@ -406,6 +406,7 @@ function renderStudySummary() {
         const li = document.createElement('li');
         li.dataset.studyIdx = String(si);
         li.dataset.seriesIdx = String(i);
+        if (se.kind === 'derived') li.classList.add('derived');
 
         if (se.thumbnail) {
           const img = document.createElement('img');
@@ -417,6 +418,13 @@ function renderStudySummary() {
           const ph = document.createElement('div');
           ph.className = 'thumb-placeholder';
           li.appendChild(ph);
+        }
+
+        if (se.kind === 'derived') {
+          const tag = document.createElement('span');
+          tag.className = 'derived-tag';
+          tag.textContent = 'DERIVED';
+          li.appendChild(tag);
         }
 
         const desc = document.createElement('div');
@@ -541,10 +549,52 @@ async function createVersion() {
   try {
     await runStream('/transform', { input: inputPath, output, ...spec });
     write(`created ${suffix} → ${output}`);
+
+    // Refresh summary: scan the new folder, build a series entry, append it
+    // under the same study the version came from, and re-render.
+    await appendNewSeries(output, suffix, selectedStudyIndex);
+
     setState('done');
   } catch (e) {
     write(`error: ${e.message || e}`);
     setState('done');
+  }
+}
+
+async function appendNewSeries(folder, label, studyIdx) {
+  if (studyIdx == null || !studyMeta?.studies?.[studyIdx]) return;
+  const port = await window.backend.getPort();
+  if (!port) return;
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/series-info`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ folder, label }),
+    });
+    if (!res.ok) return;
+    const info = await res.json();
+    const st = studyMeta.studies[studyIdx];
+    st.series.push({
+      description: info.description || label,
+      modality: info.modality,
+      orientation: info.orientation,
+      slice_thickness: info.slice_thickness,
+      slice_count: info.slice_count,
+      folder: info.folder,
+      thumbnail: info.thumbnail,
+      kind: 'derived',
+      operation: label,
+    });
+    st.series_count = st.series.length;
+    st.total_slices = (st.total_slices || 0) + (info.slice_count || 0);
+    renderStudySummary();
+    // Re-apply selection highlight to the study the version came from.
+    const addCard = studySummaryEl.querySelector(
+      `.add-card-wrap[data-study-idx="${studyIdx}"]`,
+    );
+    if (addCard) addCard.classList.add('selected');
+  } catch (e) {
+    console.warn('[renderer] series-info fetch failed:', e);
   }
 }
 

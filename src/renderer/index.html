@@ -199,6 +199,7 @@
       padding: 6px;
       color: #555;
       font-size: 12px;
+      position: relative;
     }
     .study-summary .series-list .thumb,
     .study-summary .series-list .thumb-placeholder {
@@ -207,9 +208,25 @@
       border-radius: 6px;
       background: #000;
       object-fit: contain;
+      box-sizing: border-box;
     }
     .study-summary .series-list .thumb-placeholder {
       background: rgba(127, 127, 127, 0.2);
+    }
+    /* Derived (reformat / window) series: small top-left tag on thumb */
+    .study-summary .series-list li.derived .derived-tag {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      pointer-events: none;
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: rgba(255, 255, 255, 0.7);
+      background: rgba(0, 0, 0, 0.4);
+      padding: 2px 6px;
+      border-radius: 3px;
     }
     .study-summary .series-list .add-card {
       display: flex;

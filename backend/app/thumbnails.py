@@ -68,7 +68,27 @@ def make_thumbnail(ds: pydicom.Dataset, max_size: int = 384) -> str | None:
 
         img = Image.fromarray((normed * 255).astype(np.uint8), mode='L')
 
-    img.thumbnail((max_size, max_size))
+    # Respect PixelSpacing so anisotropic reformats (thick-slice coronal /
+    # sagittal MPR) look physically correct rather than squished to the
+    # voxel grid.
+    row_mm, col_mm = 1.0, 1.0
+    ps = ds.get('PixelSpacing', None)
+    if ps is not None:
+        try:
+            row_mm = float(ps[0])
+            col_mm = float(ps[1])
+        except (TypeError, ValueError, IndexError):
+            row_mm, col_mm = 1.0, 1.0
+    if row_mm > 0 and col_mm > 0 and (row_mm != col_mm):
+        w_px, h_px = img.size
+        phys_w = w_px * col_mm
+        phys_h = h_px * row_mm
+        scale = max_size / max(phys_w, phys_h)
+        out_w = max(1, round(phys_w * scale))
+        out_h = max(1, round(phys_h * scale))
+        img = img.resize((out_w, out_h), Image.BILINEAR)
+    else:
+        img.thumbnail((max_size, max_size))
 
     buf = BytesIO()
     img.save(buf, format='PNG', optimize=True)
