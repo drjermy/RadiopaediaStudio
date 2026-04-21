@@ -17,6 +17,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.anonymizer import find_dicoms, is_dicom_file, iter_scrub_folder, scrub_file
+from app.compress import iter_compress_folder, iter_recompress_in_place
 from app.reformat import MODES as REFORMAT_MODES, ORIENTATIONS, iter_reformat_series
 from app.windowing import (
     PRESETS as WINDOW_PRESETS,
@@ -64,11 +65,19 @@ class WindowSpec(BaseModel):
     width: float
 
 
+class CompressSpec(BaseModel):
+    # None / omitted → no compression; 'lossless' → J2K lossless; 'lossy'
+    # with ratio>1 → J2K lossy at that ratio.
+    mode: str  # 'lossless' | 'lossy'
+    ratio: float | None = None
+
+
 class TransformRequest(BaseModel):
     input: str
     output: str
     reformat: ReformatSpec | None = None
     window: WindowSpec | None = None
+    compress: CompressSpec | None = None
 
 
 @app.post('/inspect')
@@ -334,10 +343,19 @@ def transform(req: TransformRequest) -> StreamingResponse:
     in_path = Path(req.input)
     out_path = Path(req.output)
 
-    if req.reformat is None and req.window is None:
-        raise HTTPException(status_code=400, detail='at least one of reformat/window required')
+    if req.reformat is None and req.window is None and req.compress is None:
+        raise HTTPException(status_code=400, detail='at least one of reformat/window/compress required')
     if not in_path.exists():
         raise HTTPException(status_code=400, detail=f'input not found: {in_path}')
+
+    compress_ratio: float | None = None
+    if req.compress is not None:
+        if req.compress.mode == 'lossy':
+            if not req.compress.ratio or req.compress.ratio <= 1:
+                raise HTTPException(status_code=400, detail='lossy compression needs ratio > 1')
+            compress_ratio = float(req.compress.ratio)
+        elif req.compress.mode != 'lossless':
+            raise HTTPException(status_code=400, detail=f'unknown compress mode: {req.compress.mode}')
 
     if req.reformat is not None:
         spec = req.reformat
@@ -360,37 +378,70 @@ def transform(req: TransformRequest) -> StreamingResponse:
                     yield _line(evt)
                 else:
                     yield _line(evt)
+            if req.compress is not None and count > 0:
+                yield _line({'type': 'phase', 'label': 'Compressing'})
+                for evt in iter_recompress_in_place(out_path, ratio=compress_ratio):
+                    if 'error' in evt:
+                        error_count += 1
+                        yield _line({'type': 'error', **evt})
             yield _line({'type': 'done', 'count': count, 'error_count': error_count, 'output': str(out_path)})
         return StreamingResponse(gen_reformat(), media_type='application/x-ndjson')
 
-    # window-only path
-    spec = req.window
-
-    if in_path.is_file():
-        def gen_file():
-            yield _line({'type': 'start', 'mode': 'file', 'total': 1, 'output': str(out_path)})
-            try:
-                apply_window_file(in_path, out_path, spec.center, spec.width)
-                yield _line({'type': 'file', 'input': str(in_path), 'output': str(out_path)})
-                yield _line({'type': 'done', 'count': 1, 'error_count': 0, 'output': str(out_path)})
-            except Exception as e:
-                yield _line({'type': 'error', 'input': str(in_path), 'error': f'{type(e).__name__}: {e}'})
-                yield _line({'type': 'done', 'count': 0, 'error_count': 1, 'output': str(out_path)})
-        return StreamingResponse(gen_file(), media_type='application/x-ndjson')
-
-    total = len(find_dicoms(in_path))
+    # Paths without reformat ---------------------------------------------------
+    total = 1 if in_path.is_file() else len(find_dicoms(in_path))
 
     def gen_folder():
         yield _line({'type': 'start', 'mode': 'folder', 'total': total, 'output': str(out_path)})
         count = 0
         error_count = 0
-        for result in iter_apply_window_folder(in_path, out_path, spec.center, spec.width):
-            if 'error' in result:
-                error_count += 1
-                yield _line({'type': 'error', **result})
+
+        if req.window is not None:
+            w = req.window
+            if in_path.is_file():
+                try:
+                    apply_window_file(in_path, out_path, w.center, w.width)
+                    yield _line({'type': 'file', 'input': str(in_path), 'output': str(out_path)})
+                    count += 1
+                except Exception as e:
+                    error_count += 1
+                    yield _line({'type': 'error', 'input': str(in_path), 'error': f'{type(e).__name__}: {e}'})
             else:
-                count += 1
-                yield _line({'type': 'file', **result})
+                for result in iter_apply_window_folder(in_path, out_path, w.center, w.width):
+                    if 'error' in result:
+                        error_count += 1
+                        yield _line({'type': 'error', **result})
+                    else:
+                        count += 1
+                        yield _line({'type': 'file', **result})
+            # Apply compression to window output if requested
+            if req.compress is not None and count > 0:
+                yield _line({'type': 'phase', 'label': 'Compressing'})
+                for evt in iter_recompress_in_place(
+                    out_path if out_path.is_dir() else out_path.parent, ratio=compress_ratio,
+                ):
+                    if 'error' in evt:
+                        error_count += 1
+                        yield _line({'type': 'error', **evt})
+        elif req.compress is not None:
+            # Compress-only path
+            if in_path.is_file():
+                try:
+                    from app.compress import compress_file
+                    compress_file(in_path, out_path, ratio=compress_ratio)
+                    yield _line({'type': 'file', 'input': str(in_path), 'output': str(out_path)})
+                    count += 1
+                except Exception as e:
+                    error_count += 1
+                    yield _line({'type': 'error', 'input': str(in_path), 'error': f'{type(e).__name__}: {e}'})
+            else:
+                for result in iter_compress_folder(in_path, out_path, ratio=compress_ratio):
+                    if 'error' in result:
+                        error_count += 1
+                        yield _line({'type': 'error', **result})
+                    else:
+                        count += 1
+                        yield _line({'type': 'file', **result})
+
         yield _line({'type': 'done', 'count': count, 'error_count': error_count, 'output': str(out_path)})
     return StreamingResponse(gen_folder(), media_type='application/x-ndjson')
 

@@ -28,6 +28,9 @@ const reformatMode = document.getElementById('reformat-mode');
 const addVersionPanel = document.getElementById('add-version');
 const addVersionTitle = document.getElementById('add-version-title');
 const baseSeriesSelect = document.getElementById('base-series');
+const compressMode = document.getElementById('compress-mode');
+const compressRatio = document.getElementById('compress-ratio');
+const compressRatioLabel = document.getElementById('compress-ratio-label');
 const windowPresetSelect = document.getElementById('window-preset');
 const versionSuffixPreview = document.getElementById('version-suffix-preview');
 
@@ -104,6 +107,8 @@ function currentVersionSpec() {
   const orient = reformatOrientation.value;
   const preset = windowPresetSelect.value;
   const thickness = parseThickness(reformatThickness.value);
+  const cmode = compressMode.value;
+  const cratio = parseFloat(compressRatio.value);
   const spec = {};
   if (orient && thickness) {
     spec.reformat = {
@@ -117,11 +122,16 @@ function currentVersionSpec() {
     const p = windowPresets[preset];
     if (p) spec.window = { center: p.center, width: p.width };
   }
-  return { orient, preset, thickness, spec };
+  if (cmode === 'lossless') {
+    spec.compress = { mode: 'lossless' };
+  } else if (cmode === 'lossy' && Number.isFinite(cratio) && cratio > 1) {
+    spec.compress = { mode: 'lossy', ratio: cratio };
+  }
+  return { orient, preset, thickness, cmode, cratio, spec };
 }
 
 function currentSuffix() {
-  const { orient, preset, thickness } = currentVersionSpec();
+  const { orient, preset, thickness, cmode, cratio } = currentVersionSpec();
   const parts = [];
   if (orient && thickness) {
     const { thickness: t, spacing: s } = thickness;
@@ -131,6 +141,8 @@ function currentSuffix() {
     if (m !== 'avg') parts.push(m);
   }
   if (preset) parts.push(preset);
+  if (cmode === 'lossless') parts.push('j2k');
+  else if (cmode === 'lossy' && Number.isFinite(cratio) && cratio > 1) parts.push(`j2k-${cratio}`);
   return parts.join('-');
 }
 
@@ -686,10 +698,14 @@ btnRevealMain.addEventListener('click', () => {
   if (anonOutput) window.shellBridge.reveal(anonOutput);
 });
 
-for (const el of [reformatOrientation, reformatThickness, reformatMode, windowPresetSelect]) {
+for (const el of [reformatOrientation, reformatThickness, reformatMode, windowPresetSelect, compressMode, compressRatio]) {
   el.addEventListener('input', updateVersionPreview);
   el.addEventListener('change', updateVersionPreview);
 }
+
+compressMode.addEventListener('change', () => {
+  compressRatioLabel.hidden = compressMode.value !== 'lossy';
+});
 
 setState('idle');
 loadPresets().then(updateVersionPreview);

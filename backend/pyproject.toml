@@ -8,6 +8,8 @@ dependencies = [
     "pydicom>=2.4",
     "numpy>=1.26",
     "Pillow>=10",
+    "pylibjpeg>=2",
+    "pylibjpeg-openjpeg>=2",
 ]
 
 [project.optional-dependencies]

@@ -504,6 +504,24 @@
           </label>
         </fieldset>
 
+        <fieldset class="op-group">
+          <legend>Compression</legend>
+          <label>Mode:
+            <select id="compress-mode">
+              <option value="">none</option>
+              <option value="lossless">JPEG 2000 lossless</option>
+              <option value="lossy">JPEG 2000 lossy</option>
+            </select>
+          </label>
+          <label id="compress-ratio-label" hidden>Ratio:
+            <input type="number" id="compress-ratio" value="12" min="2" step="1" />:1
+          </label>
+          <small class="hint">
+            Lossless shrinks ~50–80%. Lossy at ratios (CT/MR 12, DX 20,
+            MG 25) further cuts size — teaching use only, not diagnostic.
+          </small>
+        </fieldset>
+
         <div class="add-controls">
           <span id="version-suffix-preview" class="suffix-preview"></span>
           <button class="primary" id="btn-create-version" disabled>Create</button>
