@@ -14,6 +14,7 @@ const progressLabel = document.getElementById('progress-label');
 const doneTitle = document.getElementById('done-title');
 const doneSummary = document.getElementById('done-summary');
 const outputsList = document.getElementById('outputs-list');
+const studySummaryEl = document.getElementById('study-summary');
 
 const btnAnonymise = document.getElementById('btn-anonymise');
 const btnCancelInspect = document.getElementById('btn-cancel-inspect');
@@ -22,8 +23,9 @@ const btnCreateVersion = document.getElementById('btn-create-version');
 
 const reformatOrientation = document.getElementById('reformat-orientation');
 const reformatThickness = document.getElementById('reformat-thickness');
-const reformatSpacing = document.getElementById('reformat-spacing');
 const reformatMode = document.getElementById('reformat-mode');
+const seriesFieldset = document.getElementById('series-fieldset');
+const seriesSelect = document.getElementById('series-select');
 const windowPresetSelect = document.getElementById('window-preset');
 const versionSuffixPreview = document.getElementById('version-suffix-preview');
 
@@ -33,6 +35,7 @@ let pending = null;
 let anonOutput = null;
 let outputs = [];
 let windowPresets = {};
+let studyMeta = null; // { study: {...}, series: [...] }
 
 // Helpers -------------------------------------------------------------------
 function write(msg) {
@@ -96,15 +99,31 @@ function renderOutputs() {
 }
 
 // Version configuration -----------------------------------------------------
+function parseThickness(raw) {
+  raw = String(raw || '').trim();
+  if (!raw) return null;
+  if (raw.includes('/')) {
+    const [t, s] = raw.split('/').map((v) => parseFloat(v.trim()));
+    if (Number.isFinite(t) && Number.isFinite(s) && t > 0 && s > 0) {
+      return { thickness: t, spacing: s };
+    }
+    return null;
+  }
+  const v = parseFloat(raw);
+  if (Number.isFinite(v) && v > 0) return { thickness: v, spacing: v };
+  return null;
+}
+
 function currentVersionSpec() {
   const orient = reformatOrientation.value;
   const preset = windowPresetSelect.value;
+  const thickness = parseThickness(reformatThickness.value);
   const spec = {};
-  if (orient) {
+  if (orient && thickness) {
     spec.reformat = {
       orientation: orient,
-      thickness: parseFloat(reformatThickness.value),
-      spacing: parseFloat(reformatSpacing.value),
+      thickness: thickness.thickness,
+      spacing: thickness.spacing,
       mode: reformatMode.value,
     };
   }
@@ -112,16 +131,17 @@ function currentVersionSpec() {
     const p = windowPresets[preset];
     if (p) spec.window = { center: p.center, width: p.width };
   }
-  return { orient, preset, spec };
+  return { orient, preset, thickness, spec };
 }
 
 function currentSuffix() {
-  const { orient, preset } = currentVersionSpec();
+  const { orient, preset, thickness } = currentVersionSpec();
   const parts = [];
-  if (orient) {
-    const t = parseFloat(reformatThickness.value);
+  if (orient && thickness) {
+    const { thickness: t, spacing: s } = thickness;
+    const slab = t === s ? `${t}mm` : `${t}-${s}mm`;
+    parts.push(`${orient}-${slab}`);
     const m = reformatMode.value;
-    parts.push(`${orient}-${t}mm`);
     if (m !== 'avg') parts.push(m);
   }
   if (preset) parts.push(preset);
@@ -207,8 +227,12 @@ async function runStream(url, body) {
           write(`  error: ${evt.error}`);
         }
         break;
+      case 'summary':
+        // collected metadata emitted between the last 'file' and 'done'
+        final = { ...(final || {}), summary: { study: evt.study, series: evt.series } };
+        break;
       case 'done':
-        final = evt;
+        final = { ...(final || {}), ...evt };
         break;
     }
   };
@@ -225,7 +249,105 @@ async function runStream(url, body) {
     }
   }
   if (buffer.trim()) consume(buffer.trim());
-  return { ...final, aggregateDrops };
+  return { ...(final || {}), aggregateDrops };
+}
+
+function renderSeriesSelect() {
+  seriesSelect.innerHTML = '';
+  if (!studyMeta?.series?.length) {
+    seriesFieldset.hidden = true;
+    return;
+  }
+  for (let i = 0; i < studyMeta.series.length; i++) {
+    const s = studyMeta.series[i];
+    const opt = document.createElement('option');
+    opt.value = String(i);
+    const label = s.description || `series ${i + 1}`;
+    const tech = [];
+    if (s.orientation) tech.push(s.orientation);
+    if (s.slice_thickness != null) tech.push(`${s.slice_thickness}mm`);
+    tech.push(`${s.slice_count} slice${s.slice_count === 1 ? '' : 's'}`);
+    opt.textContent = `${label}  (${tech.join(' · ')})`;
+    seriesSelect.appendChild(opt);
+  }
+  // Default to the largest series (most useful for MPR usually).
+  let best = 0;
+  for (let i = 1; i < studyMeta.series.length; i++) {
+    if (studyMeta.series[i].slice_count > studyMeta.series[best].slice_count) best = i;
+  }
+  seriesSelect.value = String(best);
+  seriesFieldset.hidden = studyMeta.series.length < 2;
+}
+
+function selectedSeries() {
+  if (!studyMeta?.series?.length) return null;
+  const idx = parseInt(seriesSelect.value || '0', 10);
+  return studyMeta.series[idx] || studyMeta.series[0];
+}
+
+function renderStudySummary() {
+  if (!studyMeta || !studyMeta.study) {
+    studySummaryEl.hidden = true;
+    return;
+  }
+  studySummaryEl.hidden = false;
+  studySummaryEl.innerHTML = '';
+
+  const s = studyMeta.study;
+  const parts = [];
+  if (s.modality) parts.push(s.modality);
+  if (s.body_part) parts.push(s.body_part);
+  if (s.description) parts.push(s.description);
+  const headerBits = [];
+  headerBits.push(parts.join(' · ') || 'Study');
+  const seriesCount = studyMeta.series?.length || 0;
+  if (seriesCount > 1) {
+    headerBits.push(`${seriesCount} series`);
+  }
+  headerBits.push(`${s.total_slices} slice${s.total_slices === 1 ? '' : 's'}`);
+
+  const header = document.createElement('div');
+  header.className = 'study-line';
+  header.textContent = headerBits.join(' · ');
+  studySummaryEl.appendChild(header);
+
+  if (studyMeta.series?.length) {
+    const ul = document.createElement('ul');
+    ul.className = 'series-list';
+    for (const se of studyMeta.series) {
+      const li = document.createElement('li');
+
+      if (se.thumbnail) {
+        const img = document.createElement('img');
+        img.className = 'thumb';
+        img.src = se.thumbnail;
+        img.alt = se.description || 'series preview';
+        li.appendChild(img);
+      } else {
+        const ph = document.createElement('div');
+        ph.className = 'thumb-placeholder';
+        li.appendChild(ph);
+      }
+
+      const text = document.createElement('div');
+      const desc = document.createElement('div');
+      desc.className = 'series-desc';
+      desc.textContent = se.description || '(no description)';
+      const tech = [];
+      if (se.modality) tech.push(se.modality);
+      if (se.orientation) tech.push(se.orientation);
+      if (se.slice_thickness != null) tech.push(`${se.slice_thickness}mm`);
+      tech.push(`${se.slice_count} slice${se.slice_count === 1 ? '' : 's'}`);
+      const meta = document.createElement('div');
+      meta.className = 'series-meta';
+      meta.textContent = tech.join(' · ');
+      text.append(desc, meta);
+      li.appendChild(text);
+
+      ul.appendChild(li);
+    }
+    studySummaryEl.appendChild(ul);
+  }
 }
 
 // Inspect -------------------------------------------------------------------
@@ -262,8 +384,8 @@ async function inspect(inputPath) {
 async function runAnonymise() {
   if (!pending) return;
   processingSummary.textContent = pending.kind === 'folder'
-    ? `Anonymising ${pending.dicom_count} files → ${pending.output}`
-    : `Anonymising ${pending.name} → ${pending.output}`;
+    ? `Anonymising & analysing ${pending.dicom_count} files → ${pending.output}`
+    : `Anonymising & analysing ${pending.name} → ${pending.output}`;
   setState('processing');
 
   try {
@@ -272,7 +394,11 @@ async function runAnonymise() {
 
     anonOutput = result.output;
     outputs = [{ label: 'Anonymised', path: result.output, kind: pending.kind }];
+    studyMeta = result.summary || null;
     renderOutputs();
+    renderStudySummary();
+    renderSeriesSelect();
+    updateVersionPreview();
 
     const topDrops = [...result.aggregateDrops.entries()]
       .sort((a, b) => b[1] - a[1])
@@ -299,13 +425,15 @@ async function createVersion() {
   if (!suffix) return;
   const { spec } = currentVersionSpec();
 
-  const output = appendOutputSuffix(anonOutput, suffix, pending.kind);
+  const series = selectedSeries();
+  const inputPath = series?.folder || anonOutput;
+  const output = appendOutputSuffix(inputPath, suffix, 'folder');
   processingSummary.textContent = `Creating ${suffix} version → ${output}`;
   setState('processing');
 
   try {
-    await runStream('/transform', { input: anonOutput, output, ...spec });
-    outputs.push({ label: suffix, path: output, kind: pending.kind });
+    await runStream('/transform', { input: inputPath, output, ...spec });
+    outputs.push({ label: suffix, path: output, kind: 'folder' });
     renderOutputs();
     setState('done');
   } catch (e) {
@@ -360,12 +488,15 @@ btnReset.addEventListener('click', () => {
   pending = null;
   anonOutput = null;
   outputs = [];
+  studyMeta = null;
   renderOutputs();
+  renderStudySummary();
+  renderSeriesSelect();
   log.textContent = '';
   setState('idle');
 });
 
-for (const el of [reformatOrientation, reformatThickness, reformatSpacing, reformatMode, windowPresetSelect]) {
+for (const el of [reformatOrientation, reformatThickness, reformatMode, windowPresetSelect, seriesSelect]) {
   el.addEventListener('input', updateVersionPreview);
   el.addEventListener('change', updateVersionPreview);
 }

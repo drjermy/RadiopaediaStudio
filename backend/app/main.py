@@ -16,7 +16,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from app.anonymizer import find_dicoms, iter_scrub_folder, scrub_file
+from app.anonymizer import find_dicoms, is_dicom_file, iter_scrub_folder, scrub_file
 from app.reformat import MODES as REFORMAT_MODES, ORIENTATIONS, iter_reformat_series
 from app.windowing import (
     PRESETS as WINDOW_PRESETS,
@@ -70,7 +70,7 @@ def inspect(req: InspectRequest) -> dict:
             'kind': 'file',
             'name': in_path.name,
             'input': str(in_path),
-            'dicom_count': 1 if in_path.suffix.lower() == '.dcm' else 0,
+            'dicom_count': 1 if is_dicom_file(in_path) else 0,
             'total_bytes': in_path.stat().st_size,
         }
     if in_path.is_dir():
@@ -135,13 +135,16 @@ def anonymize(req: AnonymizeRequest) -> StreamingResponse:
             yield _line({'type': 'start', 'mode': 'folder', 'total': total, 'output': str(out_path)})
             count = 0
             error_count = 0
-            for result in iter_scrub_folder(in_path, out_path):
+            summary: dict = {}
+            for result in iter_scrub_folder(in_path, out_path, summary_out=summary):
                 if 'error' in result:
                     error_count += 1
                     yield _line({'type': 'error', **result})
                 else:
                     count += 1
                     yield _line({'type': 'file', **result})
+            if summary:
+                yield _line({'type': 'summary', **summary})
             yield _line({'type': 'done', 'count': count, 'error_count': error_count, 'output': str(out_path)})
         return StreamingResponse(gen_folder(), media_type='application/x-ndjson')
 

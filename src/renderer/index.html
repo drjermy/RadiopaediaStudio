@@ -125,6 +125,61 @@
     }
     #log:empty { display: none; }
 
+    /* Study summary */
+    .study-summary {
+      background: rgba(10, 132, 255, 0.06);
+      border-left: 3px solid var(--accent);
+      border-radius: 4px;
+      padding: 10px 12px;
+      font-size: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .study-summary .study-line {
+      font-weight: 600;
+      color: #333;
+    }
+    .study-summary .series-list {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .study-summary .series-list li {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: #555;
+      font-size: 12px;
+    }
+    .study-summary .series-list .thumb {
+      width: 48px;
+      height: 48px;
+      border-radius: 4px;
+      background: #000;
+      object-fit: contain;
+      flex-shrink: 0;
+    }
+    .study-summary .series-list .thumb-placeholder {
+      width: 48px;
+      height: 48px;
+      border-radius: 4px;
+      background: rgba(127, 127, 127, 0.2);
+      flex-shrink: 0;
+    }
+    .study-summary .series-list .series-meta {
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-size: 11px;
+      color: #666;
+    }
+    .study-summary .series-list .series-desc {
+      font-weight: 500;
+      color: #333;
+    }
+
     /* Outputs list + add-version section */
     #outputs-list {
       list-style: none;
@@ -223,6 +278,16 @@
     .suffix-preview.empty {
       font-style: italic;
     }
+    .op-group .hint {
+      flex: 1 0 100%;
+      font-size: 11px;
+      color: #888;
+    }
+    .op-group .hint code {
+      background: rgba(127, 127, 127, 0.15);
+      padding: 1px 4px;
+      border-radius: 3px;
+    }
 
     /* Layout helper: drop + panels in same visual slot */
     #main-area { flex: 1; display: flex; flex-direction: column; }
@@ -240,7 +305,7 @@
       <p class="summary" id="inspected-summary"></p>
       <div class="path" id="inspected-path"></div>
       <div class="actions">
-        <button class="primary" id="btn-anonymise">Anonymise</button>
+        <button class="primary" id="btn-anonymise">Anonymise &amp; Analyse</button>
         <button id="btn-cancel-inspect">Cancel</button>
       </div>
     </div>
@@ -257,13 +322,21 @@
     <div id="panel-done" class="panel">
       <h2 id="done-title">Done</h2>
       <p class="summary" id="done-summary"></p>
+      <div id="study-summary" class="study-summary" hidden></div>
       <ul id="outputs-list"></ul>
 
       <div class="add-version">
         <h3>Create additional version</h3>
 
+        <fieldset id="series-fieldset" class="op-group" hidden>
+          <legend>Series</legend>
+          <label>Target:
+            <select id="series-select"></select>
+          </label>
+        </fieldset>
+
         <fieldset class="op-group">
-          <legend>Reformat</legend>
+          <legend>MPR (slab reformat)</legend>
           <label>Orientation:
             <select id="reformat-orientation">
               <option value="">none</option>
@@ -272,8 +345,9 @@
               <option value="sagittal">sagittal</option>
             </select>
           </label>
-          <label>Thickness: <input type="number" id="reformat-thickness" value="3" min="0.5" step="0.5" /> mm</label>
-          <label>Spacing: <input type="number" id="reformat-spacing" value="3" min="0.5" step="0.5" /> mm</label>
+          <label>Thickness:
+            <input type="text" id="reformat-thickness" value="3" />
+          </label>
           <label>Projection:
             <select id="reformat-mode">
               <option value="avg">average</option>
@@ -281,6 +355,10 @@
               <option value="minip">MinIP</option>
             </select>
           </label>
+          <small class="hint">
+            <code>3</code> = contiguous 3 mm slabs.
+            <code>1/10</code> = 1 mm thin-slab MPR every 10 mm.
+          </small>
         </fieldset>
 
         <fieldset class="op-group">
