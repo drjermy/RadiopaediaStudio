@@ -2,8 +2,10 @@ import { app, BrowserWindow, ipcMain, shell } from 'electron';
 import { statSync } from 'fs';
 import * as path from 'path';
 import { BackendHandle, startBackend, stopBackend } from './python-manager';
+import { NodeBackendHandle, startNodeSidecar, stopNodeSidecar } from './node-manager';
 
 let backend: BackendHandle | null = null;
+let nodeBackend: NodeBackendHandle | null = null;
 let mainWindow: BrowserWindow | null = null;
 
 const projectRoot = path.resolve(__dirname, '..', '..');
@@ -29,20 +31,25 @@ async function createWindow(): Promise<void> {
 }
 
 app.whenReady().then(async () => {
+  const roots = {
+    projectRoot,
+    resourcesPath: process.resourcesPath,
+    isPackaged: app.isPackaged,
+  };
   try {
-    backend = await startBackend({
-      projectRoot,
-      resourcesPath: process.resourcesPath,
-      isPackaged: app.isPackaged,
-    });
-    console.log(`[main] backend ready on port ${backend.port}`);
+    [backend, nodeBackend] = await Promise.all([
+      startBackend(roots),
+      startNodeSidecar(roots),
+    ]);
+    console.log(`[main] python ready on ${backend.port}, node ready on ${nodeBackend.port}`);
   } catch (e) {
-    console.error('[main] failed to start backend:', e);
+    console.error('[main] failed to start backends:', e);
     app.quit();
     return;
   }
 
   ipcMain.handle('backend:port', () => backend?.port ?? null);
+  ipcMain.handle('nodeBackend:port', () => nodeBackend?.port ?? null);
   ipcMain.handle('fs:isDirectory', (_evt, p: string) => {
     try {
       return statSync(p).isDirectory();
@@ -65,5 +72,9 @@ app.on('before-quit', () => {
   if (backend) {
     stopBackend(backend);
     backend = null;
+  }
+  if (nodeBackend) {
+    stopNodeSidecar(nodeBackend);
+    nodeBackend = null;
   }
 });

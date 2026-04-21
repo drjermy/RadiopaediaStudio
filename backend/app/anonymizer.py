@@ -20,8 +20,10 @@ KEEP_TAGS = {
     'SpecificCharacterSet', 'ImageType', 'SOPClassUID', 'SOPInstanceUID',
     'Modality', 'Manufacturer', 'ManufacturerModelName',
     'AccessionNumber', 'ReferringPhysicianName',
-    'StudyDate', 'SeriesDate', 'AcquisitionDate', 'ContentDate',
-    'StudyTime', 'SeriesTime', 'AcquisitionTime', 'ContentTime',
+    # Date / time tags are intentionally NOT in the allowlist — a
+    # precise scan date can triangulate a patient via other records.
+    # Revisit with date-shift (preserve relative timing, obscure absolute)
+    # rather than adding tags back.
     'SeriesDescription',
     # Patient (coarse demographics only; values pass through from source)
     'PatientID', 'PatientSex', 'PatientAge', 'PatientWeight',
@@ -195,9 +197,12 @@ def iter_scrub_folder(input_dir: Path, output_dir: Path, *, summary_out: dict | 
     iteration as a UI-visible summary event.
     """
     remap = _make_group_remap()
-    series_stats: dict[str, dict] = {}
+    # Keyed by original StudyInstanceUID; each study has its own series
+    # dict keyed by original SeriesInstanceUID.
+    studies: dict[str, dict] = {}
+    # Per-series output paths, keyed by series UID. One flat map across
+    # all studies is fine because Series UIDs are globally unique.
     series_paths: dict[str, list[Path]] = {}
-    study_info: dict = {'total_slices': 0}
 
     for src in find_dicoms(input_dir):
         rel = src.relative_to(input_dir)
@@ -207,31 +212,46 @@ def iter_scrub_folder(input_dir: Path, output_dir: Path, *, summary_out: dict | 
 
             # Capture study/series metadata BEFORE scrub — some fields
             # (StudyDescription, etc.) get stripped by strip_phi.
+            orig_study = ds.get('StudyInstanceUID', None)
             orig_series = ds.get('SeriesInstanceUID', None)
-            if 'modality' not in study_info and ds.get('Modality', None):
-                study_info['modality'] = str(ds.Modality)
-            if 'body_part' not in study_info and ds.get('BodyPartExamined', None):
-                study_info['body_part'] = str(ds.BodyPartExamined)
-            if 'description' not in study_info and ds.get('StudyDescription', None):
-                study_info['description'] = str(ds.StudyDescription)
-            study_info['total_slices'] += 1
 
-            if orig_series and orig_series not in series_stats:
-                series_stats[orig_series] = {
+            if orig_study and orig_study not in studies:
+                studies[orig_study] = {
                     'description': (
-                        str(ds.SeriesDescription).strip()
-                        if ds.get('SeriesDescription', None) else None
+                        str(ds.StudyDescription).strip()
+                        if ds.get('StudyDescription', None) else None
                     ),
                     'modality': str(ds.Modality) if ds.get('Modality', None) else None,
-                    'orientation': classify_orientation(
-                        ds.get('ImageOrientationPatient', None)
+                    'body_part': (
+                        str(ds.BodyPartExamined)
+                        if ds.get('BodyPartExamined', None) else None
                     ),
-                    'slice_thickness': _safe_float(ds.get('SliceThickness', None)),
-                    'slice_count': 0,
+                    'study_date': (
+                        str(ds.StudyDate) if ds.get('StudyDate', None) else None
+                    ),
+                    'total_slices': 0,
+                    '_series': {},  # orig_series_uid -> series stats
                 }
-            if orig_series:
-                series_stats[orig_series]['slice_count'] += 1
-                series_paths.setdefault(orig_series, []).append(dst)
+
+            if orig_study:
+                studies[orig_study]['total_slices'] += 1
+                series_map = studies[orig_study]['_series']
+                if orig_series and orig_series not in series_map:
+                    series_map[orig_series] = {
+                        'description': (
+                            str(ds.SeriesDescription).strip()
+                            if ds.get('SeriesDescription', None) else None
+                        ),
+                        'modality': str(ds.Modality) if ds.get('Modality', None) else None,
+                        'orientation': classify_orientation(
+                            ds.get('ImageOrientationPatient', None)
+                        ),
+                        'slice_thickness': _safe_float(ds.get('SliceThickness', None)),
+                        'slice_count': 0,
+                    }
+                if orig_series:
+                    series_map[orig_series]['slice_count'] += 1
+                    series_paths.setdefault(orig_series, []).append(dst)
 
             kept, n_dropped, dropped = strip_phi(ds)
             # SOP UID always fresh; Study/Series/FrameOfRef remapped consistently.
@@ -260,21 +280,25 @@ def iter_scrub_folder(input_dir: Path, output_dir: Path, *, summary_out: dict | 
     if summary_out is not None:
         from app.thumbnails import make_thumbnail
 
-        study_info['series_count'] = len(series_stats)
-        for orig_uid, stats in series_stats.items():
-            paths = series_paths.get(orig_uid, [])
-            stats['folder'] = str(_common_parent(paths)) if paths else None
-            # Thumbnail: pick the middle written file (by sorted path) and
-            # render a small PNG preview. Silently skip on failure — the UI
-            # falls back to no thumbnail rather than breaking the summary.
-            if paths:
-                try:
-                    middle = sorted(paths)[len(paths) // 2]
-                    stats['thumbnail'] = make_thumbnail(pydicom.dcmread(middle))
-                except Exception:
-                    stats['thumbnail'] = None
-        summary_out['study'] = study_info
-        summary_out['series'] = list(series_stats.values())
+        out_studies = []
+        for study_uid, study in studies.items():
+            series_map = study.pop('_series')
+            out_series = []
+            for series_uid, stats in series_map.items():
+                paths = series_paths.get(series_uid, [])
+                stats['folder'] = str(_common_parent(paths)) if paths else None
+                # Thumbnail: middle file by path order. Silent on failure.
+                if paths:
+                    try:
+                        middle = sorted(paths)[len(paths) // 2]
+                        stats['thumbnail'] = make_thumbnail(pydicom.dcmread(middle))
+                    except Exception:
+                        stats['thumbnail'] = None
+                out_series.append(stats)
+            study['series_count'] = len(out_series)
+            study['series'] = out_series
+            out_studies.append(study)
+        summary_out['studies'] = out_studies
 
 
 def _common_parent(paths: list[Path]) -> Path:

@@ -31,6 +31,10 @@ class InspectRequest(BaseModel):
     input: str
 
 
+class ThumbnailsRequest(BaseModel):
+    folders: list[str]
+
+
 class AnonymizeRequest(BaseModel):
     input: str
     output: str
@@ -103,6 +107,30 @@ def window_presets() -> dict:
 @app.get('/reformat/options')
 def reformat_options() -> dict:
     return {'orientations': list(ORIENTATIONS), 'modes': list(REFORMAT_MODES)}
+
+
+@app.post('/thumbnails')
+def thumbnails(req: ThumbnailsRequest) -> dict:
+    """For each folder path, pick the middle DICOM file and render a
+    data-URL thumbnail. Returns { folder_path: 'data:image/png;base64...' }
+    or null per folder when no previewable slice is found."""
+    import pydicom
+    from app.thumbnails import make_thumbnail
+
+    out: dict[str, str | None] = {}
+    for folder_str in req.folders:
+        folder = Path(folder_str)
+        thumb = None
+        if folder.is_dir():
+            files = sorted(find_dicoms(folder))
+            if files:
+                middle = files[len(files) // 2]
+                try:
+                    thumb = make_thumbnail(pydicom.dcmread(middle))
+                except Exception:
+                    thumb = None
+        out[folder_str] = thumb
+    return out
 
 
 @app.post('/anonymize')

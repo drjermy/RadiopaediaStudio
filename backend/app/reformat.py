@@ -36,7 +36,7 @@ _TEMPLATE_TAGS = (
     'SpecificCharacterSet',
     'PatientID', 'PatientAge', 'PatientSex', 'PatientWeight',
     'PatientIdentityRemoved', 'DeidentificationMethod', 'BurnedInAnnotation',
-    'StudyInstanceUID', 'StudyID', 'StudyDate', 'StudyTime',
+    'StudyInstanceUID', 'StudyID',
     'AccessionNumber', 'ReferringPhysicianName',
     'Modality', 'Manufacturer', 'ManufacturerModelName', 'SoftwareVersions',
     'BodyPartExamined', 'ContrastBolusAgent',

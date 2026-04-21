@@ -109,9 +109,26 @@ def test_deep_nested_phi_dropped(ds_with_deep_nested_phi):
 def test_allowlisted_tags_survive(minimal_ds):
     """PatientID, Modality etc. are on KEEP_TAGS and should remain."""
     scrub(minimal_ds)
-    for kw in ('PatientID', 'Modality', 'StudyDate', 'SOPClassUID',
+    for kw in ('PatientID', 'Modality', 'SOPClassUID',
                'Rows', 'Columns', 'PixelData'):
         assert kw in minimal_ds, f'{kw} should be preserved'
+
+
+def test_date_time_tags_dropped(minimal_ds):
+    """All date and time tags are PHI — nulled for now, may be
+    date-shifted later."""
+    minimal_ds.StudyDate = '20240101'
+    minimal_ds.SeriesDate = '20240101'
+    minimal_ds.AcquisitionDate = '20240101'
+    minimal_ds.ContentDate = '20240101'
+    minimal_ds.StudyTime = '120000'
+    minimal_ds.SeriesTime = '120000'
+    minimal_ds.AcquisitionTime = '120000'
+    minimal_ds.ContentTime = '120000'
+    scrub(minimal_ds)
+    for kw in ('StudyDate', 'SeriesDate', 'AcquisitionDate', 'ContentDate',
+               'StudyTime', 'SeriesTime', 'AcquisitionTime', 'ContentTime'):
+        assert kw not in minimal_ds, f'{kw} should be dropped'
 
 
 def test_only_allowlisted_tags_remain(minimal_ds):

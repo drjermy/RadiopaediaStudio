@@ -1,4 +1,5 @@
 node_modules/
+backend-js/node_modules/
 dist/
 build/
 out/

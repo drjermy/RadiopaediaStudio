@@ -1,0 +1,11 @@
+{
+  "name": "pacs-anonymizer-node-sidecar",
+  "version": "0.1.0",
+  "description": "Node HTTP sidecar that runs the Radiopaedia dicom-anonymiser",
+  "type": "module",
+  "main": "server.mjs",
+  "private": true,
+  "dependencies": {
+    "dicomanon": "github:radiopaedia/dicom-anonymiser#semver:^0.4.3"
+  }
+}

@@ -12,8 +12,9 @@ const processingSummary = document.getElementById('processing-summary');
 const progressBar = document.getElementById('progress-bar');
 const progressLabel = document.getElementById('progress-label');
 const doneTitle = document.getElementById('done-title');
-const doneSummary = document.getElementById('done-summary');
-const outputsList = document.getElementById('outputs-list');
+const btnRevealMain = document.getElementById('btn-reveal-main');
+const dropDetails = document.getElementById('drop-details');
+const dropDetailsBody = document.getElementById('drop-details-body');
 const studySummaryEl = document.getElementById('study-summary');
 
 const btnAnonymise = document.getElementById('btn-anonymise');
@@ -24,8 +25,8 @@ const btnCreateVersion = document.getElementById('btn-create-version');
 const reformatOrientation = document.getElementById('reformat-orientation');
 const reformatThickness = document.getElementById('reformat-thickness');
 const reformatMode = document.getElementById('reformat-mode');
-const seriesFieldset = document.getElementById('series-fieldset');
-const seriesSelect = document.getElementById('series-select');
+const addVersionPanel = document.getElementById('add-version');
+const addVersionTitle = document.getElementById('add-version-title');
 const windowPresetSelect = document.getElementById('window-preset');
 const versionSuffixPreview = document.getElementById('version-suffix-preview');
 
@@ -33,9 +34,10 @@ const versionSuffixPreview = document.getElementById('version-suffix-preview');
 let state = 'idle'; // 'idle' | 'inspected' | 'processing' | 'done'
 let pending = null;
 let anonOutput = null;
-let outputs = [];
 let windowPresets = {};
-let studyMeta = null; // { study: {...}, series: [...] }
+let studyMeta = null; // { studies: [{ ..., series: [...] }, ...] }
+let selectedStudyIndex = null;
+let selectedSeriesIndex = null;
 
 // Helpers -------------------------------------------------------------------
 function write(msg) {
@@ -78,24 +80,6 @@ function appendOutputSuffix(basePath, suffix, kind) {
 
 function deriveAnonPath(inputPath, kind) {
   return appendOutputSuffix(inputPath, 'anon', kind);
-}
-
-function renderOutputs() {
-  outputsList.innerHTML = '';
-  for (const out of outputs) {
-    const li = document.createElement('li');
-    const label = document.createElement('span');
-    label.className = 'out-label';
-    label.textContent = out.label;
-    const pathEl = document.createElement('span');
-    pathEl.className = 'out-path';
-    pathEl.textContent = out.path;
-    const btn = document.createElement('button');
-    btn.textContent = 'Reveal';
-    btn.addEventListener('click', () => window.shellBridge.reveal(out.path));
-    li.append(label, pathEl, btn);
-    outputsList.appendChild(li);
-  }
 }
 
 // Version configuration -----------------------------------------------------
@@ -161,10 +145,67 @@ function updateVersionPreview() {
   }
 }
 
-// Streaming runner ----------------------------------------------------------
-async function runStream(url, body) {
+async function attachThumbnails() {
+  if (!studyMeta?.studies?.length) return;
+  const folders = [];
+  for (const st of studyMeta.studies) {
+    for (const se of st.series || []) {
+      if (se.folder) folders.push(se.folder);
+    }
+  }
+  if (folders.length === 0) return;
   const port = await window.backend.getPort();
-  if (!port) throw new Error('backend not ready');
+  if (!port) return;
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/thumbnails`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ folders }),
+    });
+    if (!res.ok) return;
+    const map = await res.json();
+    for (const st of studyMeta.studies) {
+      for (const se of st.series || []) {
+        if (se.folder && map[se.folder]) se.thumbnail = map[se.folder];
+      }
+    }
+  } catch (e) {
+    console.warn('[renderer] thumbnail fetch failed:', e);
+  }
+}
+
+function renderDropDetails(aggregateDrops, fileCount, kind) {
+  dropDetailsBody.innerHTML = '';
+  if (!aggregateDrops || aggregateDrops.size === 0) {
+    const p = document.createElement('div');
+    p.className = 'empty';
+    p.textContent = 'No tags dropped.';
+    dropDetailsBody.appendChild(p);
+    dropDetails.hidden = false;
+    return;
+  }
+  const rows = [...aggregateDrops.entries()].sort((a, b) => b[1] - a[1]);
+  for (const [tag, n] of rows) {
+    const row = document.createElement('div');
+    row.className = 'drop-row';
+    const name = document.createElement('span');
+    name.textContent = tag;
+    const count = document.createElement('span');
+    count.className = 'count';
+    count.textContent = kind === 'folder'
+      ? `${n} / ${fileCount}`
+      : '';
+    row.append(name, count);
+    dropDetailsBody.appendChild(row);
+  }
+  dropDetails.hidden = false;
+}
+
+// Streaming runner ----------------------------------------------------------
+async function runStream(url, body, { sidecar = 'python' } = {}) {
+  const getPort = sidecar === 'node' ? window.nodeBackend.getPort : window.backend.getPort;
+  const port = await getPort();
+  if (!port) throw new Error(`${sidecar} backend not ready`);
 
   progressBar.value = 0;
   progressBar.removeAttribute('max'); // indeterminate until we get a total
@@ -229,7 +270,7 @@ async function runStream(url, body) {
         break;
       case 'summary':
         // collected metadata emitted between the last 'file' and 'done'
-        final = { ...(final || {}), summary: { study: evt.study, series: evt.series } };
+        final = { ...(final || {}), summary: { studies: evt.studies } };
         break;
       case 'done':
         final = { ...(final || {}), ...evt };
@@ -252,101 +293,125 @@ async function runStream(url, body) {
   return { ...(final || {}), aggregateDrops };
 }
 
-function renderSeriesSelect() {
-  seriesSelect.innerHTML = '';
-  if (!studyMeta?.series?.length) {
-    seriesFieldset.hidden = true;
-    return;
-  }
-  for (let i = 0; i < studyMeta.series.length; i++) {
-    const s = studyMeta.series[i];
-    const opt = document.createElement('option');
-    opt.value = String(i);
-    const label = s.description || `series ${i + 1}`;
-    const tech = [];
-    if (s.orientation) tech.push(s.orientation);
-    if (s.slice_thickness != null) tech.push(`${s.slice_thickness}mm`);
-    tech.push(`${s.slice_count} slice${s.slice_count === 1 ? '' : 's'}`);
-    opt.textContent = `${label}  (${tech.join(' · ')})`;
-    seriesSelect.appendChild(opt);
-  }
-  // Default to the largest series (most useful for MPR usually).
-  let best = 0;
-  for (let i = 1; i < studyMeta.series.length; i++) {
-    if (studyMeta.series[i].slice_count > studyMeta.series[best].slice_count) best = i;
-  }
-  seriesSelect.value = String(best);
-  seriesFieldset.hidden = studyMeta.series.length < 2;
+function selectedSeries() {
+  if (selectedStudyIndex == null || selectedSeriesIndex == null) return null;
+  const st = studyMeta?.studies?.[selectedStudyIndex];
+  return st?.series?.[selectedSeriesIndex] || null;
 }
 
-function selectedSeries() {
-  if (!studyMeta?.series?.length) return null;
-  const idx = parseInt(seriesSelect.value || '0', 10);
-  return studyMeta.series[idx] || studyMeta.series[0];
+function setStudyCollapsed(studyIdx, collapsed) {
+  const block = studySummaryEl.querySelector(`.study-block[data-study-idx="${studyIdx}"]`);
+  if (block) block.classList.toggle('collapsed', collapsed);
+}
+
+function selectSeries(studyIdx, seriesIdx) {
+  const st = studyMeta?.studies?.[studyIdx];
+  if (!st?.series?.[seriesIdx]) return;
+  selectedStudyIndex = studyIdx;
+  selectedSeriesIndex = seriesIdx;
+  for (const li of studySummaryEl.querySelectorAll('.series-list li')) {
+    const match = parseInt(li.dataset.studyIdx, 10) === studyIdx
+      && parseInt(li.dataset.seriesIdx, 10) === seriesIdx;
+    li.classList.toggle('selected', match);
+  }
+  // Collapse any study that isn't the one the selection lives in.
+  if (studyMeta?.studies?.length) {
+    for (let i = 0; i < studyMeta.studies.length; i++) {
+      setStudyCollapsed(i, i !== studyIdx);
+    }
+  }
+  const s = st.series[seriesIdx];
+  addVersionTitle.textContent = `Create additional version from: ${s.description || `series ${seriesIdx + 1}`}`;
+  addVersionPanel.hidden = false;
+  updateVersionPreview();
 }
 
 function renderStudySummary() {
-  if (!studyMeta || !studyMeta.study) {
+  studySummaryEl.innerHTML = '';
+  if (!studyMeta?.studies?.length) {
     studySummaryEl.hidden = true;
     return;
   }
   studySummaryEl.hidden = false;
-  studySummaryEl.innerHTML = '';
 
-  const s = studyMeta.study;
-  const parts = [];
-  if (s.modality) parts.push(s.modality);
-  if (s.body_part) parts.push(s.body_part);
-  if (s.description) parts.push(s.description);
-  const headerBits = [];
-  headerBits.push(parts.join(' · ') || 'Study');
-  const seriesCount = studyMeta.series?.length || 0;
-  if (seriesCount > 1) {
-    headerBits.push(`${seriesCount} series`);
-  }
-  headerBits.push(`${s.total_slices} slice${s.total_slices === 1 ? '' : 's'}`);
+  for (let si = 0; si < studyMeta.studies.length; si++) {
+    const st = studyMeta.studies[si];
+    const block = document.createElement('div');
+    block.className = 'study-block';
+    block.dataset.studyIdx = String(si);
 
-  const header = document.createElement('div');
-  header.className = 'study-line';
-  header.textContent = headerBits.join(' · ');
-  studySummaryEl.appendChild(header);
+    const headParts = [];
+    if (st.modality) headParts.push(st.modality);
+    if (st.body_part) headParts.push(st.body_part);
+    if (st.description) headParts.push(st.description);
+    const headerText = headParts.join(' · ') || `Study ${si + 1}`;
 
-  if (studyMeta.series?.length) {
-    const ul = document.createElement('ul');
-    ul.className = 'series-list';
-    for (const se of studyMeta.series) {
-      const li = document.createElement('li');
+    const metaBits = [];
+    if (st.study_date) metaBits.push(st.study_date);
+    metaBits.push(`${st.series_count} series`);
+    metaBits.push(`${st.total_slices} slice${st.total_slices === 1 ? '' : 's'}`);
 
-      if (se.thumbnail) {
-        const img = document.createElement('img');
-        img.className = 'thumb';
-        img.src = se.thumbnail;
-        img.alt = se.description || 'series preview';
-        li.appendChild(img);
-      } else {
-        const ph = document.createElement('div');
-        ph.className = 'thumb-placeholder';
-        li.appendChild(ph);
+    const header = document.createElement('button');
+    header.className = 'study-header';
+    header.type = 'button';
+    const twisty = document.createElement('span');
+    twisty.className = 'twisty';
+    twisty.textContent = '▾';
+    const label = document.createElement('span');
+    label.textContent = headerText;
+    const metaEl = document.createElement('span');
+    metaEl.className = 'study-meta';
+    metaEl.textContent = metaBits.join(' · ');
+    header.append(twisty, label, metaEl);
+    header.addEventListener('click', () => {
+      block.classList.toggle('collapsed');
+    });
+    block.appendChild(header);
+
+    const body = document.createElement('div');
+    body.className = 'study-body';
+
+    if (st.series?.length) {
+      const ul = document.createElement('ul');
+      ul.className = 'series-list';
+      for (let i = 0; i < st.series.length; i++) {
+        const se = st.series[i];
+        const li = document.createElement('li');
+        li.dataset.studyIdx = String(si);
+        li.dataset.seriesIdx = String(i);
+
+        if (se.thumbnail) {
+          const img = document.createElement('img');
+          img.className = 'thumb';
+          img.src = se.thumbnail;
+          img.alt = se.description || 'series preview';
+          li.appendChild(img);
+        } else {
+          const ph = document.createElement('div');
+          ph.className = 'thumb-placeholder';
+          li.appendChild(ph);
+        }
+
+        const desc = document.createElement('div');
+        desc.className = 'series-desc';
+        desc.textContent = se.description || '(no description)';
+        const tech = [];
+        if (se.modality) tech.push(se.modality);
+        if (se.orientation) tech.push(se.orientation);
+        if (se.slice_thickness != null) tech.push(`${se.slice_thickness}mm`);
+        tech.push(`${se.slice_count} slice${se.slice_count === 1 ? '' : 's'}`);
+        const meta = document.createElement('div');
+        meta.className = 'series-meta';
+        meta.textContent = tech.join(' · ');
+        li.append(desc, meta);
+
+        li.addEventListener('click', () => selectSeries(si, i));
+        ul.appendChild(li);
       }
-
-      const text = document.createElement('div');
-      const desc = document.createElement('div');
-      desc.className = 'series-desc';
-      desc.textContent = se.description || '(no description)';
-      const tech = [];
-      if (se.modality) tech.push(se.modality);
-      if (se.orientation) tech.push(se.orientation);
-      if (se.slice_thickness != null) tech.push(`${se.slice_thickness}mm`);
-      tech.push(`${se.slice_count} slice${se.slice_count === 1 ? '' : 's'}`);
-      const meta = document.createElement('div');
-      meta.className = 'series-meta';
-      meta.textContent = tech.join(' · ');
-      text.append(desc, meta);
-      li.appendChild(text);
-
-      ul.appendChild(li);
+      body.appendChild(ul);
     }
-    studySummaryEl.appendChild(ul);
+    block.appendChild(body);
+    studySummaryEl.appendChild(block);
   }
 }
 
@@ -390,27 +455,29 @@ async function runAnonymise() {
 
   try {
     const result = await runStream('/anonymize',
-      { input: pending.input, output: pending.output });
+      { input: pending.input, output: pending.output }, { sidecar: 'node' });
 
     anonOutput = result.output;
-    outputs = [{ label: 'Anonymised', path: result.output, kind: pending.kind }];
     studyMeta = result.summary || null;
-    renderOutputs();
+    selectedStudyIndex = null;
+    selectedSeriesIndex = null;
+    addVersionPanel.hidden = true;
+
+    // Node doesn't render thumbnails — ask Python to do a batch pass on the
+    // anonymised series folders, then merge results into the summary.
+    await attachThumbnails();
+
     renderStudySummary();
-    renderSeriesSelect();
+    // Auto-select when there's exactly one series across one study.
+    if (studyMeta?.studies?.length === 1 && studyMeta.studies[0].series?.length === 1) {
+      selectSeries(0, 0);
+    }
     updateVersionPreview();
 
-    const topDrops = [...result.aggregateDrops.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 4)
-      .map(([tag, n]) => pending.kind === 'folder' ? `${tag} (${n})` : tag)
-      .join(', ');
     doneTitle.textContent = result.error_count > 0
       ? `Anonymised — ${result.count} written, ${result.error_count} failed`
       : `Anonymised — ${result.count} file${result.count === 1 ? '' : 's'} written`;
-    doneSummary.textContent = topDrops
-      ? `Dropped: ${topDrops}${result.aggregateDrops.size > 4 ? ' …' : ''}`
-      : 'No tags dropped';
+    renderDropDetails(result.aggregateDrops, result.count, pending.kind);
     setState('done');
   } catch (e) {
     write(`error: ${e.message || e}`);
@@ -433,8 +500,7 @@ async function createVersion() {
 
   try {
     await runStream('/transform', { input: inputPath, output, ...spec });
-    outputs.push({ label: suffix, path: output, kind: 'folder' });
-    renderOutputs();
+    write(`created ${suffix} → ${output}`);
     setState('done');
   } catch (e) {
     write(`error: ${e.message || e}`);
@@ -487,16 +553,23 @@ btnCreateVersion.addEventListener('click', createVersion);
 btnReset.addEventListener('click', () => {
   pending = null;
   anonOutput = null;
-  outputs = [];
   studyMeta = null;
-  renderOutputs();
+  selectedStudyIndex = null;
+  selectedSeriesIndex = null;
+  addVersionPanel.hidden = true;
+  dropDetails.hidden = true;
+  dropDetails.open = false;
+  dropDetailsBody.innerHTML = '';
   renderStudySummary();
-  renderSeriesSelect();
   log.textContent = '';
   setState('idle');
 });
 
-for (const el of [reformatOrientation, reformatThickness, reformatMode, windowPresetSelect, seriesSelect]) {
+btnRevealMain.addEventListener('click', () => {
+  if (anonOutput) window.shellBridge.reveal(anonOutput);
+});
+
+for (const el of [reformatOrientation, reformatThickness, reformatMode, windowPresetSelect]) {
   el.addEventListener('input', updateVersionPreview);
   el.addEventListener('change', updateVersionPreview);
 }

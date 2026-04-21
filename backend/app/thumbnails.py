@@ -25,7 +25,7 @@ def _first(v):
     return v
 
 
-def make_thumbnail(ds: pydicom.Dataset, max_size: int = 128) -> str | None:
+def make_thumbnail(ds: pydicom.Dataset, max_size: int = 384) -> str | None:
     """Return a data-URL string (`data:image/png;base64,...`) for ds, or
     None if the slice isn't previewable (no PixelData, unsupported type)."""
     if 'PixelData' not in ds:

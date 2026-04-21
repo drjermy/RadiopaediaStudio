@@ -127,87 +127,142 @@
 
     /* Study summary */
     .study-summary {
-      background: rgba(10, 132, 255, 0.06);
-      border-left: 3px solid var(--accent);
-      border-radius: 4px;
-      padding: 10px 12px;
+      padding: 4px 0;
       font-size: 12px;
       display: flex;
       flex-direction: column;
-      gap: 6px;
+      gap: 14px;
     }
-    .study-summary .study-line {
+    .study-block {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .study-header {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      width: 100%;
+      font: inherit;
       font-weight: 600;
       color: #333;
+      background: transparent;
+      border: none;
+      padding: 4px 0;
+      text-align: left;
+      cursor: pointer;
+      border-bottom: 1px solid rgba(127, 127, 127, 0.2);
     }
+    .study-header:hover { color: var(--accent); }
+    .study-header .twisty {
+      display: inline-block;
+      width: 10px;
+      font-size: 10px;
+      color: #999;
+      transition: transform 0.12s;
+    }
+    .study-block.collapsed .twisty { transform: rotate(-90deg); }
+    .study-header .study-meta {
+      font-weight: 400;
+      color: #777;
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-size: 11px;
+      margin-left: auto;  /* right-align on same row */
+    }
+    .study-body {
+      overflow: hidden;
+    }
+    .study-block.collapsed .study-body { display: none; }
     .study-summary .series-list {
       margin: 0;
       padding: 0;
       list-style: none;
       display: flex;
-      flex-direction: column;
-      gap: 6px;
+      flex-wrap: wrap;
+      gap: 14px;
     }
     .study-summary .series-list li {
       display: flex;
-      align-items: center;
-      gap: 10px;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 6px;
+      width: 192px;
+      padding: 6px;
+      border-radius: 8px;
+      border: 2px solid transparent;
+      cursor: pointer;
       color: #555;
       font-size: 12px;
+      transition: border-color 0.12s, background 0.12s;
     }
-    .study-summary .series-list .thumb {
-      width: 48px;
-      height: 48px;
-      border-radius: 4px;
+    .study-summary .series-list li:hover {
+      background: rgba(127, 127, 127, 0.08);
+    }
+    .study-summary .series-list li.selected {
+      border-color: var(--accent);
+      background: rgba(10, 132, 255, 0.08);
+    }
+    .study-summary .series-list .thumb,
+    .study-summary .series-list .thumb-placeholder {
+      width: 192px;
+      height: 192px;
+      border-radius: 6px;
       background: #000;
       object-fit: contain;
-      flex-shrink: 0;
     }
     .study-summary .series-list .thumb-placeholder {
-      width: 48px;
-      height: 48px;
-      border-radius: 4px;
       background: rgba(127, 127, 127, 0.2);
-      flex-shrink: 0;
-    }
-    .study-summary .series-list .series-meta {
-      font-family: ui-monospace, "SF Mono", Menlo, monospace;
-      font-size: 11px;
-      color: #666;
     }
     .study-summary .series-list .series-desc {
       font-weight: 500;
       color: #333;
+      line-height: 1.25;
+      word-break: break-word;
+    }
+    .study-summary .series-list .series-meta {
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-size: 11px;
+      color: #777;
     }
 
-    /* Outputs list + add-version section */
-    #outputs-list {
-      list-style: none;
-      padding: 0;
-      margin: 0;
+    /* Done header: title left, reveal right */
+    .done-header {
       display: flex;
-      flex-direction: column;
-      gap: 6px;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 12px;
     }
-    #outputs-list li {
-      display: flex;
-      gap: 10px;
-      align-items: center;
-      padding: 8px 10px;
-      background: rgba(127, 127, 127, 0.08);
-      border-radius: 6px;
+    .drop-details {
       font-size: 12px;
     }
-    #outputs-list li .out-label {
-      font-weight: 500;
+    .drop-details > summary {
+      cursor: pointer;
+      color: #888;
+      padding: 4px 0;
+      user-select: none;
     }
-    #outputs-list li .out-path {
-      flex: 1;
-      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    .drop-details > summary:hover { color: var(--accent); }
+    .drop-details[open] > summary { color: #555; }
+    #drop-details-body {
+      padding: 8px 0 4px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
       color: #666;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+    }
+    #drop-details-body .drop-row {
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-size: 11px;
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    #drop-details-body .drop-row .count {
+      color: #999;
+    }
+    #drop-details-body .empty {
+      font-style: italic;
+      color: #999;
     }
     .add-version h3 {
       margin: 0 0 8px 0;
@@ -320,20 +375,18 @@
     </div>
 
     <div id="panel-done" class="panel">
-      <h2 id="done-title">Done</h2>
-      <p class="summary" id="done-summary"></p>
+      <div class="done-header">
+        <h2 id="done-title">Done</h2>
+        <button class="primary" id="btn-reveal-main">Reveal in Finder</button>
+      </div>
+      <details id="drop-details" class="drop-details" hidden>
+        <summary>Anonymisation details</summary>
+        <div id="drop-details-body"></div>
+      </details>
       <div id="study-summary" class="study-summary" hidden></div>
-      <ul id="outputs-list"></ul>
 
-      <div class="add-version">
-        <h3>Create additional version</h3>
-
-        <fieldset id="series-fieldset" class="op-group" hidden>
-          <legend>Series</legend>
-          <label>Target:
-            <select id="series-select"></select>
-          </label>
-        </fieldset>
+      <div class="add-version" id="add-version" hidden>
+        <h3 id="add-version-title">Create additional version</h3>
 
         <fieldset class="op-group">
           <legend>MPR (slab reformat)</legend>
