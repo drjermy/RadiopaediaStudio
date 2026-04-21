@@ -27,6 +27,7 @@ const reformatThickness = document.getElementById('reformat-thickness');
 const reformatMode = document.getElementById('reformat-mode');
 const addVersionPanel = document.getElementById('add-version');
 const addVersionTitle = document.getElementById('add-version-title');
+const baseSeriesSelect = document.getElementById('base-series');
 const windowPresetSelect = document.getElementById('window-preset');
 const versionSuffixPreview = document.getElementById('version-suffix-preview');
 
@@ -64,6 +65,7 @@ function setState(next) {
   panelInspected.classList.toggle('active', next === 'inspected');
   panelProcessing.classList.toggle('active', next === 'processing');
   panelDone.classList.toggle('active', next === 'done');
+  btnReset.hidden = next === 'idle';
 }
 
 function appendOutputSuffix(basePath, suffix, kind) {
@@ -299,29 +301,54 @@ function selectedSeries() {
   return st?.series?.[selectedSeriesIndex] || null;
 }
 
+baseSeriesSelect.addEventListener('change', () => {
+  const [si, i] = baseSeriesSelect.value.split(',').map((v) => parseInt(v, 10));
+  if (Number.isFinite(si) && Number.isFinite(i)) openVersionPanel(si, i);
+});
+
 function setStudyCollapsed(studyIdx, collapsed) {
   const block = studySummaryEl.querySelector(`.study-block[data-study-idx="${studyIdx}"]`);
   if (block) block.classList.toggle('collapsed', collapsed);
 }
 
-function selectSeries(studyIdx, seriesIdx) {
+function populateBaseSeriesSelect(studyIdx) {
+  baseSeriesSelect.innerHTML = '';
+  const st = studyMeta?.studies?.[studyIdx];
+  if (!st?.series?.length) return;
+  for (let i = 0; i < st.series.length; i++) {
+    const se = st.series[i];
+    const opt = document.createElement('option');
+    opt.value = `${studyIdx},${i}`;
+    const tech = [];
+    if (se.orientation) tech.push(se.orientation);
+    if (se.slice_thickness != null) tech.push(`${se.slice_thickness}mm`);
+    tech.push(`${se.slice_count} slice${se.slice_count === 1 ? '' : 's'}`);
+    opt.textContent = `${se.description || `series ${i + 1}`}  (${tech.join(' · ')})`;
+    baseSeriesSelect.appendChild(opt);
+  }
+}
+
+function openVersionPanel(studyIdx, seriesIdx) {
   const st = studyMeta?.studies?.[studyIdx];
   if (!st?.series?.[seriesIdx]) return;
   selectedStudyIndex = studyIdx;
   selectedSeriesIndex = seriesIdx;
-  for (const li of studySummaryEl.querySelectorAll('.series-list li')) {
-    const match = parseInt(li.dataset.studyIdx, 10) === studyIdx
-      && parseInt(li.dataset.seriesIdx, 10) === seriesIdx;
-    li.classList.toggle('selected', match);
+
+  populateBaseSeriesSelect(studyIdx);
+  baseSeriesSelect.value = `${studyIdx},${seriesIdx}`;
+
+  // Highlight the "+" card of the originating study; clear others.
+  for (const card of studySummaryEl.querySelectorAll('.add-card-wrap')) {
+    card.classList.toggle('selected', parseInt(card.dataset.studyIdx, 10) === studyIdx);
   }
+
   // Collapse any study that isn't the one the selection lives in.
   if (studyMeta?.studies?.length) {
     for (let i = 0; i < studyMeta.studies.length; i++) {
       setStudyCollapsed(i, i !== studyIdx);
     }
   }
-  const s = st.series[seriesIdx];
-  addVersionTitle.textContent = `Create additional version from: ${s.description || `series ${seriesIdx + 1}`}`;
+  addVersionTitle.textContent = 'Create additional version';
   addVersionPanel.hidden = false;
   updateVersionPreview();
 }
@@ -405,9 +432,24 @@ function renderStudySummary() {
         meta.textContent = tech.join(' · ');
         li.append(desc, meta);
 
-        li.addEventListener('click', () => selectSeries(si, i));
         ul.appendChild(li);
       }
+
+      // "+" card to open the Create panel without preselecting a specific
+      // series beyond this study's first one.
+      const addLi = document.createElement('li');
+      addLi.className = 'add-card-wrap';
+      addLi.dataset.studyIdx = String(si);
+      const card = document.createElement('div');
+      card.className = 'add-card';
+      card.textContent = '+';
+      const addLabel = document.createElement('div');
+      addLabel.className = 'add-card-label';
+      addLabel.textContent = 'New version';
+      addLi.append(card, addLabel);
+      addLi.addEventListener('click', () => openVersionPanel(si, 0));
+      ul.appendChild(addLi);
+
       body.appendChild(ul);
     }
     block.appendChild(body);
@@ -468,10 +510,8 @@ async function runAnonymise() {
     await attachThumbnails();
 
     renderStudySummary();
-    // Auto-select when there's exactly one series across one study.
-    if (studyMeta?.studies?.length === 1 && studyMeta.studies[0].series?.length === 1) {
-      selectSeries(0, 0);
-    }
+    // Panel stays hidden — user explicitly clicks a "+" card to open it.
+    addVersionPanel.hidden = true;
     updateVersionPreview();
 
     doneTitle.textContent = result.error_count > 0
