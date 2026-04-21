@@ -17,6 +17,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.anonymizer import find_dicoms, iter_scrub_folder, scrub_file
+from app.reformat import MODES as REFORMAT_MODES, ORIENTATIONS, iter_reformat_series
 from app.windowing import (
     PRESETS as WINDOW_PRESETS,
     apply_window_file,
@@ -40,6 +41,25 @@ class WindowRequest(BaseModel):
     output: str
     center: float
     width: float
+
+
+class ReformatSpec(BaseModel):
+    orientation: str  # axial / coronal / sagittal
+    thickness: float
+    spacing: float
+    mode: str  # avg / mip / minip
+
+
+class WindowSpec(BaseModel):
+    center: float
+    width: float
+
+
+class TransformRequest(BaseModel):
+    input: str
+    output: str
+    reformat: ReformatSpec | None = None
+    window: WindowSpec | None = None
 
 
 @app.post('/inspect')
@@ -78,6 +98,11 @@ def health() -> dict:
 @app.get('/window/presets')
 def window_presets() -> dict:
     return {name: {'center': c, 'width': w} for name, (c, w) in WINDOW_PRESETS.items()}
+
+
+@app.get('/reformat/options')
+def reformat_options() -> dict:
+    return {'orientations': list(ORIENTATIONS), 'modes': list(REFORMAT_MODES)}
 
 
 @app.post('/anonymize')
@@ -158,6 +183,79 @@ def window(req: WindowRequest) -> StreamingResponse:
         return StreamingResponse(gen_folder(), media_type='application/x-ndjson')
 
     raise HTTPException(status_code=400, detail=f'input not found: {in_path}')
+
+
+@app.post('/transform')
+def transform(req: TransformRequest) -> StreamingResponse:
+    """Compose reformat + window in one call.
+
+    - reformat set, window unset → MPR reformat (window tags copied from input)
+    - reformat set, window set   → MPR reformat with new window tags baked in
+    - reformat unset, window set → apply window only (fast tag rewrite)
+    - both unset                 → 400
+    """
+    in_path = Path(req.input)
+    out_path = Path(req.output)
+
+    if req.reformat is None and req.window is None:
+        raise HTTPException(status_code=400, detail='at least one of reformat/window required')
+    if not in_path.exists():
+        raise HTTPException(status_code=400, detail=f'input not found: {in_path}')
+
+    if req.reformat is not None:
+        spec = req.reformat
+        wc = req.window.center if req.window else None
+        ww = req.window.width if req.window else None
+
+        def gen_reformat():
+            yield _line({'type': 'start', 'mode': 'reformat', 'total': 0, 'output': str(out_path)})
+            count = 0
+            error_count = 0
+            for evt in iter_reformat_series(
+                in_path, out_path, spec.orientation, spec.thickness, spec.spacing,
+                spec.mode, window_center=wc, window_width=ww,
+            ):
+                if evt['type'] == 'error':
+                    error_count += 1
+                    yield _line(evt)
+                elif evt['type'] == 'file':
+                    count += 1
+                    yield _line(evt)
+                else:
+                    yield _line(evt)
+            yield _line({'type': 'done', 'count': count, 'error_count': error_count, 'output': str(out_path)})
+        return StreamingResponse(gen_reformat(), media_type='application/x-ndjson')
+
+    # window-only path
+    spec = req.window
+
+    if in_path.is_file():
+        def gen_file():
+            yield _line({'type': 'start', 'mode': 'file', 'total': 1, 'output': str(out_path)})
+            try:
+                apply_window_file(in_path, out_path, spec.center, spec.width)
+                yield _line({'type': 'file', 'input': str(in_path), 'output': str(out_path)})
+                yield _line({'type': 'done', 'count': 1, 'error_count': 0, 'output': str(out_path)})
+            except Exception as e:
+                yield _line({'type': 'error', 'input': str(in_path), 'error': f'{type(e).__name__}: {e}'})
+                yield _line({'type': 'done', 'count': 0, 'error_count': 1, 'output': str(out_path)})
+        return StreamingResponse(gen_file(), media_type='application/x-ndjson')
+
+    total = len(find_dicoms(in_path))
+
+    def gen_folder():
+        yield _line({'type': 'start', 'mode': 'folder', 'total': total, 'output': str(out_path)})
+        count = 0
+        error_count = 0
+        for result in iter_apply_window_folder(in_path, out_path, spec.center, spec.width):
+            if 'error' in result:
+                error_count += 1
+                yield _line({'type': 'error', **result})
+            else:
+                count += 1
+                yield _line({'type': 'file', **result})
+        yield _line({'type': 'done', 'count': count, 'error_count': error_count, 'output': str(out_path)})
+    return StreamingResponse(gen_folder(), media_type='application/x-ndjson')
 
 
 def main() -> None:

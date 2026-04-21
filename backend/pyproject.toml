@@ -6,6 +6,7 @@ dependencies = [
     "fastapi>=0.110",
     "uvicorn>=0.29",
     "pydicom>=2.4",
+    "numpy>=1.26",
 ]
 
 [project.optional-dependencies]

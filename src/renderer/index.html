@@ -160,19 +160,68 @@
       font-weight: 600;
       color: #666;
     }
-    .add-controls {
+    .add-version {
       display: flex;
+      flex-direction: column;
       gap: 8px;
+    }
+    .op-group {
+      border: 1px solid rgba(127, 127, 127, 0.25);
+      border-radius: 6px;
+      padding: 8px 12px;
+      margin: 0;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 16px;
       align-items: center;
     }
-    .add-controls select {
+    .op-group legend {
+      font-size: 11px;
+      color: #666;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      padding: 0 4px;
+    }
+    .op-group label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: #555;
+    }
+    .op-group input[type="number"] {
+      width: 60px;
       font: inherit;
-      font-size: 13px;
-      padding: 5px 8px;
-      border-radius: 6px;
+      font-size: 12px;
+      padding: 3px 6px;
+      border-radius: 4px;
       border: 1px solid rgba(127, 127, 127, 0.4);
       background: transparent;
       color: inherit;
+    }
+    .op-group select {
+      font: inherit;
+      font-size: 12px;
+      padding: 3px 6px;
+      border-radius: 4px;
+      border: 1px solid rgba(127, 127, 127, 0.4);
+      background: transparent;
+      color: inherit;
+    }
+    .add-controls {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      margin-top: 4px;
+    }
+    .suffix-preview {
+      flex: 1;
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-size: 12px;
+      color: #888;
+    }
+    .suffix-preview.empty {
+      font-style: italic;
     }
 
     /* Layout helper: drop + panels in same visual slot */
@@ -212,13 +261,40 @@
 
       <div class="add-version">
         <h3>Create additional version</h3>
+
+        <fieldset class="op-group">
+          <legend>Reformat</legend>
+          <label>Orientation:
+            <select id="reformat-orientation">
+              <option value="">none</option>
+              <option value="axial">axial</option>
+              <option value="coronal">coronal</option>
+              <option value="sagittal">sagittal</option>
+            </select>
+          </label>
+          <label>Thickness: <input type="number" id="reformat-thickness" value="3" min="0.5" step="0.5" /> mm</label>
+          <label>Spacing: <input type="number" id="reformat-spacing" value="3" min="0.5" step="0.5" /> mm</label>
+          <label>Projection:
+            <select id="reformat-mode">
+              <option value="avg">average</option>
+              <option value="mip">MIP</option>
+              <option value="minip">MinIP</option>
+            </select>
+          </label>
+        </fieldset>
+
+        <fieldset class="op-group">
+          <legend>Window</legend>
+          <label>Preset:
+            <select id="window-preset">
+              <option value="">none</option>
+            </select>
+          </label>
+        </fieldset>
+
         <div class="add-controls">
-          <select id="op-type">
-            <option value="window">Apply window</option>
-            <option value="reformat" disabled>Reformat slab (coming soon)</option>
-          </select>
-          <select id="window-preset"></select>
-          <button id="btn-create-version">Create</button>
+          <span id="version-suffix-preview" class="suffix-preview"></span>
+          <button class="primary" id="btn-create-version" disabled>Create</button>
         </div>
       </div>
 

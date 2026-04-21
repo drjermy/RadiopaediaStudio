@@ -3,6 +3,10 @@ dist/
 build/
 out/
 *.log
+.DS_Store
+
+# Local DICOM test data — don't commit
+dcm/
 
 # Python
 backend/.venv/

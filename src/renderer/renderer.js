@@ -19,14 +19,19 @@ const btnAnonymise = document.getElementById('btn-anonymise');
 const btnCancelInspect = document.getElementById('btn-cancel-inspect');
 const btnReset = document.getElementById('btn-reset');
 const btnCreateVersion = document.getElementById('btn-create-version');
-const opTypeSelect = document.getElementById('op-type');
+
+const reformatOrientation = document.getElementById('reformat-orientation');
+const reformatThickness = document.getElementById('reformat-thickness');
+const reformatSpacing = document.getElementById('reformat-spacing');
+const reformatMode = document.getElementById('reformat-mode');
 const windowPresetSelect = document.getElementById('window-preset');
+const versionSuffixPreview = document.getElementById('version-suffix-preview');
 
 // State ---------------------------------------------------------------------
 let state = 'idle'; // 'idle' | 'inspected' | 'processing' | 'done'
-let pending = null; // { input, output, kind, name, dicom_count, total_bytes }
-let anonOutput = null; // path string — source for additional versions
-let outputs = []; // [{ label, path, kind }]
+let pending = null;
+let anonOutput = null;
+let outputs = [];
 let windowPresets = {};
 
 // Helpers -------------------------------------------------------------------
@@ -90,14 +95,60 @@ function renderOutputs() {
   }
 }
 
+// Version configuration -----------------------------------------------------
+function currentVersionSpec() {
+  const orient = reformatOrientation.value;
+  const preset = windowPresetSelect.value;
+  const spec = {};
+  if (orient) {
+    spec.reformat = {
+      orientation: orient,
+      thickness: parseFloat(reformatThickness.value),
+      spacing: parseFloat(reformatSpacing.value),
+      mode: reformatMode.value,
+    };
+  }
+  if (preset) {
+    const p = windowPresets[preset];
+    if (p) spec.window = { center: p.center, width: p.width };
+  }
+  return { orient, preset, spec };
+}
+
+function currentSuffix() {
+  const { orient, preset } = currentVersionSpec();
+  const parts = [];
+  if (orient) {
+    const t = parseFloat(reformatThickness.value);
+    const m = reformatMode.value;
+    parts.push(`${orient}-${t}mm`);
+    if (m !== 'avg') parts.push(m);
+  }
+  if (preset) parts.push(preset);
+  return parts.join('-');
+}
+
+function updateVersionPreview() {
+  const suffix = currentSuffix();
+  if (suffix) {
+    versionSuffixPreview.textContent = '→ _' + suffix;
+    versionSuffixPreview.classList.remove('empty');
+    btnCreateVersion.disabled = false;
+  } else {
+    versionSuffixPreview.textContent = 'Pick at least one option';
+    versionSuffixPreview.classList.add('empty');
+    btnCreateVersion.disabled = true;
+  }
+}
+
 // Streaming runner ----------------------------------------------------------
-async function runStream(url, body, totalHint) {
+async function runStream(url, body) {
   const port = await window.backend.getPort();
   if (!port) throw new Error('backend not ready');
 
-  progressBar.max = Math.max(totalHint, 1);
   progressBar.value = 0;
-  progressLabel.textContent = `0 / ${totalHint}`;
+  progressBar.removeAttribute('max'); // indeterminate until we get a total
+  progressLabel.textContent = '…';
 
   const res = await fetch(`http://127.0.0.1:${port}${url}`, {
     method: 'POST',
@@ -113,6 +164,7 @@ async function runStream(url, body, totalHint) {
   const decoder = new TextDecoder('utf-8');
   let buffer = '';
   let done = 0;
+  let total = 0;
   const aggregateDrops = new Map();
   let final = null;
 
@@ -120,20 +172,40 @@ async function runStream(url, body, totalHint) {
     const evt = JSON.parse(line);
     switch (evt.type) {
       case 'start':
+        total = evt.total || 0;
+        if (total > 0) {
+          progressBar.max = total;
+          progressBar.value = 0;
+          progressLabel.textContent = `0 / ${total}`;
+        }
+        break;
+      case 'total':
+        total = evt.total;
+        progressBar.max = total;
+        progressBar.value = done;
+        progressLabel.textContent = `${done} / ${total}`;
+        break;
+      case 'phase':
+        processingSummary.textContent = evt.label + '…';
         break;
       case 'file':
         done += 1;
-        progressBar.value = done;
-        progressLabel.textContent = `${done} / ${totalHint}`;
+        if (total > 0) {
+          progressBar.value = done;
+          progressLabel.textContent = `${done} / ${total}`;
+        } else {
+          progressLabel.textContent = `${done}`;
+        }
         for (const tag of evt.dropped_tags || []) {
           aggregateDrops.set(tag, (aggregateDrops.get(tag) || 0) + 1);
         }
         break;
       case 'error':
-        done += 1;
-        progressBar.value = done;
-        progressLabel.textContent = `${done} / ${totalHint}`;
-        write(`  error: ${evt.input}: ${evt.error}`);
+        if (evt.input) {
+          write(`  error: ${evt.input}: ${evt.error}`);
+        } else {
+          write(`  error: ${evt.error}`);
+        }
         break;
       case 'done':
         final = evt;
@@ -189,18 +261,14 @@ async function inspect(inputPath) {
 // Anonymise -----------------------------------------------------------------
 async function runAnonymise() {
   if (!pending) return;
-  processingSummary.textContent =
-    pending.kind === 'folder'
-      ? `Anonymising ${pending.dicom_count} files → ${pending.output}`
-      : `Anonymising ${pending.name} → ${pending.output}`;
+  processingSummary.textContent = pending.kind === 'folder'
+    ? `Anonymising ${pending.dicom_count} files → ${pending.output}`
+    : `Anonymising ${pending.name} → ${pending.output}`;
   setState('processing');
 
   try {
-    const result = await runStream(
-      '/anonymize',
-      { input: pending.input, output: pending.output },
-      pending.dicom_count,
-    );
+    const result = await runStream('/anonymize',
+      { input: pending.input, output: pending.output });
 
     anonOutput = result.output;
     outputs = [{ label: 'Anonymised', path: result.output, kind: pending.kind }];
@@ -227,24 +295,17 @@ async function runAnonymise() {
 // Additional versions -------------------------------------------------------
 async function createVersion() {
   if (!anonOutput) return;
-  const op = opTypeSelect.value;
-  if (op !== 'window') return; // only window wired for now
+  const suffix = currentSuffix();
+  if (!suffix) return;
+  const { spec } = currentVersionSpec();
 
-  const preset = windowPresetSelect.value;
-  const config = windowPresets[preset];
-  if (!config) return;
-
-  const output = appendOutputSuffix(anonOutput, preset, pending.kind);
-  processingSummary.textContent = `Applying ${preset} window → ${output}`;
+  const output = appendOutputSuffix(anonOutput, suffix, pending.kind);
+  processingSummary.textContent = `Creating ${suffix} version → ${output}`;
   setState('processing');
 
   try {
-    const result = await runStream(
-      '/window',
-      { input: anonOutput, output, center: config.center, width: config.width },
-      pending.dicom_count,
-    );
-    outputs.push({ label: `Windowed (${preset})`, path: result.output, kind: pending.kind });
+    await runStream('/transform', { input: anonOutput, output, ...spec });
+    outputs.push({ label: suffix, path: output, kind: pending.kind });
     renderOutputs();
     setState('done');
   } catch (e) {
@@ -253,13 +314,12 @@ async function createVersion() {
   }
 }
 
-async function loadWindowPresets() {
+async function loadPresets() {
   const port = await window.backend.getPort();
   if (!port) return;
   const res = await fetch(`http://127.0.0.1:${port}/window/presets`);
   if (!res.ok) return;
   windowPresets = await res.json();
-  windowPresetSelect.innerHTML = '';
   for (const name of Object.keys(windowPresets)) {
     const opt = document.createElement('option');
     opt.value = name;
@@ -292,7 +352,7 @@ drop.addEventListener('drop', (e) => {
   inspect(p);
 });
 
-// Buttons -------------------------------------------------------------------
+// Buttons & config listeners -----------------------------------------------
 btnAnonymise.addEventListener('click', runAnonymise);
 btnCancelInspect.addEventListener('click', () => { pending = null; setState('idle'); });
 btnCreateVersion.addEventListener('click', createVersion);
@@ -305,5 +365,10 @@ btnReset.addEventListener('click', () => {
   setState('idle');
 });
 
+for (const el of [reformatOrientation, reformatThickness, reformatSpacing, reformatMode, windowPresetSelect]) {
+  el.addEventListener('input', updateVersionPreview);
+  el.addEventListener('change', updateVersionPreview);
+}
+
 setState('idle');
-loadWindowPresets();
+loadPresets().then(updateVersionPreview);
