@@ -125,6 +125,56 @@
     }
     #log:empty { display: none; }
 
+    /* Outputs list + add-version section */
+    #outputs-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    #outputs-list li {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      padding: 8px 10px;
+      background: rgba(127, 127, 127, 0.08);
+      border-radius: 6px;
+      font-size: 12px;
+    }
+    #outputs-list li .out-label {
+      font-weight: 500;
+    }
+    #outputs-list li .out-path {
+      flex: 1;
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      color: #666;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .add-version h3 {
+      margin: 0 0 8px 0;
+      font-size: 13px;
+      font-weight: 600;
+      color: #666;
+    }
+    .add-controls {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .add-controls select {
+      font: inherit;
+      font-size: 13px;
+      padding: 5px 8px;
+      border-radius: 6px;
+      border: 1px solid rgba(127, 127, 127, 0.4);
+      background: transparent;
+      color: inherit;
+    }
+
     /* Layout helper: drop + panels in same visual slot */
     #main-area { flex: 1; display: flex; flex-direction: column; }
     #main-area > * { flex: 1; }
@@ -158,9 +208,21 @@
     <div id="panel-done" class="panel">
       <h2 id="done-title">Done</h2>
       <p class="summary" id="done-summary"></p>
-      <div class="path" id="done-path"></div>
+      <ul id="outputs-list"></ul>
+
+      <div class="add-version">
+        <h3>Create additional version</h3>
+        <div class="add-controls">
+          <select id="op-type">
+            <option value="window">Apply window</option>
+            <option value="reformat" disabled>Reformat slab (coming soon)</option>
+          </select>
+          <select id="window-preset"></select>
+          <button id="btn-create-version">Create</button>
+        </div>
+      </div>
+
       <div class="actions">
-        <button class="primary" id="btn-reveal">Reveal in Finder</button>
         <button id="btn-reset">Drop another</button>
       </div>
     </div>

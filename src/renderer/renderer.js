@@ -13,17 +13,21 @@ const progressBar = document.getElementById('progress-bar');
 const progressLabel = document.getElementById('progress-label');
 const doneTitle = document.getElementById('done-title');
 const doneSummary = document.getElementById('done-summary');
-const donePath = document.getElementById('done-path');
+const outputsList = document.getElementById('outputs-list');
 
 const btnAnonymise = document.getElementById('btn-anonymise');
 const btnCancelInspect = document.getElementById('btn-cancel-inspect');
-const btnReveal = document.getElementById('btn-reveal');
 const btnReset = document.getElementById('btn-reset');
+const btnCreateVersion = document.getElementById('btn-create-version');
+const opTypeSelect = document.getElementById('op-type');
+const windowPresetSelect = document.getElementById('window-preset');
 
 // State ---------------------------------------------------------------------
 let state = 'idle'; // 'idle' | 'inspected' | 'processing' | 'done'
 let pending = null; // { input, output, kind, name, dicom_count, total_bytes }
-let result = null;  // { output, count, error_count, aggregate_drops }
+let anonOutput = null; // path string — source for additional versions
+let outputs = []; // [{ label, path, kind }]
+let windowPresets = {};
 
 // Helpers -------------------------------------------------------------------
 function write(msg) {
@@ -52,13 +56,104 @@ function setState(next) {
   panelDone.classList.toggle('active', next === 'done');
 }
 
-function deriveOutputPath(inputPath, isDirectory) {
-  if (isDirectory) return inputPath.replace(/\/+$/, '') + '_anon';
-  const slash = inputPath.lastIndexOf('/');
-  const base = slash >= 0 ? inputPath.slice(slash + 1) : inputPath;
-  const dot = base.lastIndexOf('.');
-  if (dot <= 0) return inputPath + '_anon';
-  return inputPath.slice(0, slash + 1 + dot) + '_anon' + inputPath.slice(slash + 1 + dot);
+function appendOutputSuffix(basePath, suffix, kind) {
+  if (kind === 'folder') {
+    return basePath.replace(/\/+$/, '') + '_' + suffix;
+  }
+  const slash = basePath.lastIndexOf('/');
+  const fname = basePath.slice(slash + 1);
+  const dot = fname.lastIndexOf('.');
+  if (dot <= 0) return basePath + '_' + suffix;
+  const parentDir = basePath.slice(0, slash + 1);
+  return parentDir + fname.slice(0, dot) + '_' + suffix + fname.slice(dot);
+}
+
+function deriveAnonPath(inputPath, kind) {
+  return appendOutputSuffix(inputPath, 'anon', kind);
+}
+
+function renderOutputs() {
+  outputsList.innerHTML = '';
+  for (const out of outputs) {
+    const li = document.createElement('li');
+    const label = document.createElement('span');
+    label.className = 'out-label';
+    label.textContent = out.label;
+    const pathEl = document.createElement('span');
+    pathEl.className = 'out-path';
+    pathEl.textContent = out.path;
+    const btn = document.createElement('button');
+    btn.textContent = 'Reveal';
+    btn.addEventListener('click', () => window.shellBridge.reveal(out.path));
+    li.append(label, pathEl, btn);
+    outputsList.appendChild(li);
+  }
+}
+
+// Streaming runner ----------------------------------------------------------
+async function runStream(url, body, totalHint) {
+  const port = await window.backend.getPort();
+  if (!port) throw new Error('backend not ready');
+
+  progressBar.max = Math.max(totalHint, 1);
+  progressBar.value = 0;
+  progressLabel.textContent = `0 / ${totalHint}`;
+
+  const res = await fetch(`http://127.0.0.1:${port}${url}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`${res.status}: ${err}`);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+  let done = 0;
+  const aggregateDrops = new Map();
+  let final = null;
+
+  const consume = (line) => {
+    const evt = JSON.parse(line);
+    switch (evt.type) {
+      case 'start':
+        break;
+      case 'file':
+        done += 1;
+        progressBar.value = done;
+        progressLabel.textContent = `${done} / ${totalHint}`;
+        for (const tag of evt.dropped_tags || []) {
+          aggregateDrops.set(tag, (aggregateDrops.get(tag) || 0) + 1);
+        }
+        break;
+      case 'error':
+        done += 1;
+        progressBar.value = done;
+        progressLabel.textContent = `${done} / ${totalHint}`;
+        write(`  error: ${evt.input}: ${evt.error}`);
+        break;
+      case 'done':
+        final = evt;
+        break;
+    }
+  };
+
+  for (;;) {
+    const { value, done: streamDone } = await reader.read();
+    if (streamDone) break;
+    buffer += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, idx).trim();
+      buffer = buffer.slice(idx + 1);
+      if (line) consume(line);
+    }
+  }
+  if (buffer.trim()) consume(buffer.trim());
+  return { ...final, aggregateDrops };
 }
 
 // Inspect -------------------------------------------------------------------
@@ -82,16 +177,11 @@ async function inspect(inputPath) {
   }
 
   const isDir = info.kind === 'folder';
-  pending = {
-    ...info,
-    output: deriveOutputPath(inputPath, isDir),
-  };
-  inspectedTitle.textContent = isDir
-    ? `Folder: ${info.name}`
-    : `File: ${info.name}`;
+  pending = { ...info, output: deriveAnonPath(inputPath, info.kind) };
+  inspectedTitle.textContent = isDir ? `Folder: ${info.name}` : `File: ${info.name}`;
   inspectedSummary.textContent = isDir
     ? `${info.dicom_count} DICOM file${info.dicom_count === 1 ? '' : 's'} · ${humanBytes(info.total_bytes)}`
-    : `${humanBytes(info.total_bytes)}`;
+    : humanBytes(info.total_bytes);
   inspectedPath.textContent = info.input;
   setState('inspected');
 }
@@ -99,106 +189,83 @@ async function inspect(inputPath) {
 // Anonymise -----------------------------------------------------------------
 async function runAnonymise() {
   if (!pending) return;
-  const port = await window.backend.getPort();
-  if (!port) { write('error: backend not ready'); return; }
-
   processingSummary.textContent =
     pending.kind === 'folder'
-      ? `${pending.dicom_count} files → ${pending.output}`
-      : `${pending.name} → ${pending.output}`;
-  progressBar.max = Math.max(pending.dicom_count, 1);
-  progressBar.value = 0;
-  progressLabel.textContent = `0 / ${pending.dicom_count}`;
+      ? `Anonymising ${pending.dicom_count} files → ${pending.output}`
+      : `Anonymising ${pending.name} → ${pending.output}`;
   setState('processing');
 
-  let done = 0;
-  const aggregateDrops = new Map(); // tag → count
-  const errors = [];
-
   try {
-    const res = await fetch(`http://127.0.0.1:${port}/anonymize`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ input: pending.input, output: pending.output }),
-    });
-    if (!res.ok) {
-      const body = await res.text();
-      write(`anonymise failed ${res.status}: ${body}`);
-      setState('inspected');
-      return;
-    }
+    const result = await runStream(
+      '/anonymize',
+      { input: pending.input, output: pending.output },
+      pending.dicom_count,
+    );
 
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder('utf-8');
-    let buffer = '';
-
-    for (;;) {
-      const { value, done: streamDone } = await reader.read();
-      if (streamDone) break;
-      buffer += decoder.decode(value, { stream: true });
-      let idx;
-      while ((idx = buffer.indexOf('\n')) >= 0) {
-        const line = buffer.slice(0, idx).trim();
-        buffer = buffer.slice(idx + 1);
-        if (!line) continue;
-        handleEvent(JSON.parse(line));
-      }
-    }
-    if (buffer.trim()) handleEvent(JSON.parse(buffer.trim()));
-  } catch (e) {
-    write(`error: ${e.message || e}`);
-    setState('inspected');
-    return;
-  }
-
-  function handleEvent(evt) {
-    switch (evt.type) {
-      case 'start':
-        // total is known from inspect; ignore backend total
-        break;
-      case 'file':
-        done += 1;
-        progressBar.value = done;
-        progressLabel.textContent = `${done} / ${pending.dicom_count}`;
-        for (const tag of evt.dropped_tags || []) {
-          aggregateDrops.set(tag, (aggregateDrops.get(tag) || 0) + 1);
-        }
-        break;
-      case 'error':
-        done += 1;
-        progressBar.value = done;
-        progressLabel.textContent = `${done} / ${pending.dicom_count}`;
-        errors.push({ input: evt.input, error: evt.error });
-        write(`  error: ${evt.input}: ${evt.error}`);
-        break;
-      case 'done':
-        result = {
-          output: evt.output,
-          count: evt.count,
-          error_count: evt.error_count,
-          aggregateDrops,
-        };
-        finish();
-        break;
-    }
-  }
-
-  function finish() {
-    if (!result) return;
-    doneTitle.textContent = result.error_count > 0
-      ? `Done — ${result.count} written, ${result.error_count} failed`
-      : `Done — ${result.count} file${result.count === 1 ? '' : 's'} written`;
+    anonOutput = result.output;
+    outputs = [{ label: 'Anonymised', path: result.output, kind: pending.kind }];
+    renderOutputs();
 
     const topDrops = [...result.aggregateDrops.entries()]
       .sort((a, b) => b[1] - a[1])
       .slice(0, 4)
       .map(([tag, n]) => pending.kind === 'folder' ? `${tag} (${n})` : tag)
       .join(', ');
+    doneTitle.textContent = result.error_count > 0
+      ? `Anonymised — ${result.count} written, ${result.error_count} failed`
+      : `Anonymised — ${result.count} file${result.count === 1 ? '' : 's'} written`;
     doneSummary.textContent = topDrops
       ? `Dropped: ${topDrops}${result.aggregateDrops.size > 4 ? ' …' : ''}`
       : 'No tags dropped';
-    donePath.textContent = result.output;
     setState('done');
+  } catch (e) {
+    write(`error: ${e.message || e}`);
+    setState('inspected');
+  }
+}
+
+// Additional versions -------------------------------------------------------
+async function createVersion() {
+  if (!anonOutput) return;
+  const op = opTypeSelect.value;
+  if (op !== 'window') return; // only window wired for now
+
+  const preset = windowPresetSelect.value;
+  const config = windowPresets[preset];
+  if (!config) return;
+
+  const output = appendOutputSuffix(anonOutput, preset, pending.kind);
+  processingSummary.textContent = `Applying ${preset} window → ${output}`;
+  setState('processing');
+
+  try {
+    const result = await runStream(
+      '/window',
+      { input: anonOutput, output, center: config.center, width: config.width },
+      pending.dicom_count,
+    );
+    outputs.push({ label: `Windowed (${preset})`, path: result.output, kind: pending.kind });
+    renderOutputs();
+    setState('done');
+  } catch (e) {
+    write(`error: ${e.message || e}`);
+    setState('done');
+  }
+}
+
+async function loadWindowPresets() {
+  const port = await window.backend.getPort();
+  if (!port) return;
+  const res = await fetch(`http://127.0.0.1:${port}/window/presets`);
+  if (!res.ok) return;
+  windowPresets = await res.json();
+  windowPresetSelect.innerHTML = '';
+  for (const name of Object.keys(windowPresets)) {
+    const opt = document.createElement('option');
+    opt.value = name;
+    const p = windowPresets[name];
+    opt.textContent = `${name} (C ${p.center} / W ${p.width})`;
+    windowPresetSelect.appendChild(opt);
   }
 }
 
@@ -217,29 +284,26 @@ async function runAnonymise() {
 );
 
 drop.addEventListener('drop', (e) => {
-  if (state !== 'idle') return; // drops only accepted from idle
+  if (state !== 'idle') return;
   const files = Array.from(e.dataTransfer?.files || []);
   if (files.length === 0) return;
-  const f = files[0]; // first item only
-  const p = window.fsBridge.pathForFile(f);
+  const p = window.fsBridge.pathForFile(files[0]);
   if (!p) { write('dropped item has no path'); return; }
   inspect(p);
 });
 
 // Buttons -------------------------------------------------------------------
 btnAnonymise.addEventListener('click', runAnonymise);
-btnCancelInspect.addEventListener('click', () => {
-  pending = null;
-  setState('idle');
-});
-btnReveal.addEventListener('click', () => {
-  if (result?.output) window.shellBridge.reveal(result.output);
-});
+btnCancelInspect.addEventListener('click', () => { pending = null; setState('idle'); });
+btnCreateVersion.addEventListener('click', createVersion);
 btnReset.addEventListener('click', () => {
   pending = null;
-  result = null;
+  anonOutput = null;
+  outputs = [];
+  renderOutputs();
   log.textContent = '';
   setState('idle');
 });
 
 setState('idle');
+loadWindowPresets();

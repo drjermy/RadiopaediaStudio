@@ -17,6 +17,11 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.anonymizer import find_dicoms, iter_scrub_folder, scrub_file
+from app.windowing import (
+    PRESETS as WINDOW_PRESETS,
+    apply_window_file,
+    iter_apply_window_folder,
+)
 
 app = FastAPI(title='pacs-anonymizer-backend', version='0.1.0')
 
@@ -28,6 +33,13 @@ class InspectRequest(BaseModel):
 class AnonymizeRequest(BaseModel):
     input: str
     output: str
+
+
+class WindowRequest(BaseModel):
+    input: str
+    output: str
+    center: float
+    width: float
 
 
 @app.post('/inspect')
@@ -63,6 +75,11 @@ def health() -> dict:
     return {'status': 'ok'}
 
 
+@app.get('/window/presets')
+def window_presets() -> dict:
+    return {name: {'center': c, 'width': w} for name, (c, w) in WINDOW_PRESETS.items()}
+
+
 @app.post('/anonymize')
 def anonymize(req: AnonymizeRequest) -> StreamingResponse:
     """Stream NDJSON — one JSON object per line. Event types:
@@ -94,6 +111,43 @@ def anonymize(req: AnonymizeRequest) -> StreamingResponse:
             count = 0
             error_count = 0
             for result in iter_scrub_folder(in_path, out_path):
+                if 'error' in result:
+                    error_count += 1
+                    yield _line({'type': 'error', **result})
+                else:
+                    count += 1
+                    yield _line({'type': 'file', **result})
+            yield _line({'type': 'done', 'count': count, 'error_count': error_count, 'output': str(out_path)})
+        return StreamingResponse(gen_folder(), media_type='application/x-ndjson')
+
+    raise HTTPException(status_code=400, detail=f'input not found: {in_path}')
+
+
+@app.post('/window')
+def window(req: WindowRequest) -> StreamingResponse:
+    in_path = Path(req.input)
+    out_path = Path(req.output)
+
+    if in_path.is_file():
+        def gen_file():
+            yield _line({'type': 'start', 'mode': 'file', 'total': 1, 'output': str(out_path)})
+            try:
+                apply_window_file(in_path, out_path, req.center, req.width)
+                yield _line({'type': 'file', 'input': str(in_path), 'output': str(out_path)})
+                yield _line({'type': 'done', 'count': 1, 'error_count': 0, 'output': str(out_path)})
+            except Exception as e:
+                yield _line({'type': 'error', 'input': str(in_path), 'error': f'{type(e).__name__}: {e}'})
+                yield _line({'type': 'done', 'count': 0, 'error_count': 1, 'output': str(out_path)})
+        return StreamingResponse(gen_file(), media_type='application/x-ndjson')
+
+    if in_path.is_dir():
+        total = len(find_dicoms(in_path))
+
+        def gen_folder():
+            yield _line({'type': 'start', 'mode': 'folder', 'total': total, 'output': str(out_path)})
+            count = 0
+            error_count = 0
+            for result in iter_apply_window_folder(in_path, out_path, req.center, req.width):
                 if 'error' in result:
                     error_count += 1
                     yield _line({'type': 'error', **result})

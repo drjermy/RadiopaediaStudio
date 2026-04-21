@@ -69,7 +69,10 @@ KEEP_TAGS = {
 }
 
 
-def scrub(ds) -> tuple[int, int, list[str]]:
+def strip_phi(ds) -> tuple[int, int, list[str]]:
+    """Drop non-allowlisted tags and set de-id flags. Does NOT regenerate
+    UIDs — caller is responsible for that, so folder-level callers can
+    use a consistent remap and single-file callers can generate fresh."""
     ds.remove_private_tags()
 
     kept = 0
@@ -82,18 +85,42 @@ def scrub(ds) -> tuple[int, int, list[str]]:
             dropped.append(kw or f'{elem.tag}')
             del ds[elem.tag]
 
-    ds.SOPInstanceUID = generate_uid(prefix='2.25.')
-    ds.StudyInstanceUID = generate_uid(prefix='2.25.')
-    ds.SeriesInstanceUID = generate_uid(prefix='2.25.')
-    if hasattr(ds, 'file_meta'):
-        ds.file_meta.MediaStorageSOPInstanceUID = ds.SOPInstanceUID
-
     ds.PatientIdentityRemoved = 'YES'
     ds.DeidentificationMethod = 'pacs-anonymizer allowlist scrub'
     if 'BurnedInAnnotation' not in ds:
         ds.BurnedInAnnotation = 'NO'
 
     return kept, len(dropped), dropped
+
+
+def _make_group_remap():
+    """Return a function that maps each distinct original UID to a
+    stable fresh 2.25.* UID. Same input → same output on repeat calls,
+    so files originally sharing a UID share the new one."""
+    cache: dict[str, str] = {}
+    def remap(original):
+        if original is None:
+            return None
+        if original not in cache:
+            cache[original] = generate_uid(prefix='2.25.')
+        return cache[original]
+    return remap
+
+
+def scrub(ds) -> tuple[int, int, list[str]]:
+    """Single-file scrub: strip PHI + regenerate every UID independently.
+    Folder-level scrubbing uses shared remapping — see iter_scrub_folder."""
+    kept, n_dropped, dropped = strip_phi(ds)
+    ds.SOPInstanceUID = generate_uid(prefix='2.25.')
+    if 'StudyInstanceUID' in ds:
+        ds.StudyInstanceUID = generate_uid(prefix='2.25.')
+    if 'SeriesInstanceUID' in ds:
+        ds.SeriesInstanceUID = generate_uid(prefix='2.25.')
+    if 'FrameOfReferenceUID' in ds:
+        ds.FrameOfReferenceUID = generate_uid(prefix='2.25.')
+    if hasattr(ds, 'file_meta'):
+        ds.file_meta.MediaStorageSOPInstanceUID = ds.SOPInstanceUID
+    return kept, n_dropped, dropped
 
 
 def scrub_file(input_path: Path, output_path: Path) -> dict:
@@ -110,14 +137,38 @@ def find_dicoms(input_dir: Path) -> list[Path]:
 
 def iter_scrub_folder(input_dir: Path, output_dir: Path):
     """Yield per-file results as they're processed. Per-file failures are
-    yielded as {'error': ...} rather than raised — a bad file doesn't abort
-    the batch.
+    yielded rather than raised. UIDs are remapped consistently across the
+    whole folder: same original Study/Series/FrameOfRef UIDs map to the
+    same new UIDs, so files that were in the same series stay in the
+    same series. SOPInstanceUIDs are always regenerated fresh per file.
     """
+    remap = _make_group_remap()
+
     for src in find_dicoms(input_dir):
         rel = src.relative_to(input_dir)
         dst = output_dir / rel
         try:
-            info = scrub_file(src, dst)
-            yield {'input': str(src), 'output': str(dst), **info}
+            ds = pydicom.dcmread(src)
+            kept, n_dropped, dropped = strip_phi(ds)
+            # SOP UID always fresh; Study/Series/FrameOfRef remapped consistently.
+            ds.SOPInstanceUID = generate_uid(prefix='2.25.')
+            if 'StudyInstanceUID' in ds:
+                ds.StudyInstanceUID = remap(ds.StudyInstanceUID)
+            if 'SeriesInstanceUID' in ds:
+                ds.SeriesInstanceUID = remap(ds.SeriesInstanceUID)
+            if 'FrameOfReferenceUID' in ds:
+                ds.FrameOfReferenceUID = remap(ds.FrameOfReferenceUID)
+            if hasattr(ds, 'file_meta'):
+                ds.file_meta.MediaStorageSOPInstanceUID = ds.SOPInstanceUID
+
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            ds.save_as(dst, enforce_file_format=True)
+            yield {
+                'input': str(src),
+                'output': str(dst),
+                'kept': kept,
+                'dropped': n_dropped,
+                'dropped_tags': dropped,
+            }
         except Exception as e:
             yield {'input': str(src), 'error': f'{type(e).__name__}: {e}'}
