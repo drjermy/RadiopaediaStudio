@@ -9,9 +9,9 @@ See `pacs-anonymizer-handoff.md` for the full project plan.
 ### One-time setup
 
 ```sh
-# Backend: create venv and install the FastAPI app
+# Backend: create venv and install the FastAPI app (+ pytest for tests)
 python3 -m venv backend/.venv
-backend/.venv/bin/pip install -e backend
+backend/.venv/bin/pip install -e 'backend[dev]'
 
 # Frontend: install Electron + TypeScript
 npm install
@@ -26,6 +26,14 @@ npm run dev
 ```
 
 Compiles TypeScript and launches Electron. The main process spawns the Python backend on a free `127.0.0.1` port, waits for `/health`, then opens the window. Drop a `.dcm` file onto the drop zone — the anonymised file is written alongside it with an `_anon` suffix.
+
+### Tests
+
+```sh
+backend/.venv/bin/pytest backend/tests/
+```
+
+Covers the `scrub()` core function: PHI stripping, UID regeneration, de-id flag setting, private-tag removal, nested SQ handling. Tests target **invariants**, not specific tag lists — adding a tag to `KEEP_TAGS` shouldn't require updating tests.
 
 ### Packaging
 
