@@ -1,0 +1,10 @@
+node_modules/
+dist/
+build/
+out/
+*.log
+
+# Python
+backend/.venv/
+backend/**/__pycache__/
+backend/**/*.egg-info/

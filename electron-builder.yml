@@ -1,0 +1,24 @@
+appId: com.radiopaedia.pacs-anonymizer
+productName: PACS Anonymizer
+directories:
+  output: build
+files:
+  - dist/**/*
+  - src/renderer/**/*
+  - package.json
+extraResources:
+  - from: backend
+    to: backend
+    filter:
+      - "**/*"
+      - "!.venv/**"
+      - "!**/__pycache__/**"
+      - "!**/*.egg-info/**"
+mac:
+  target:
+    - target: dmg
+      arch:
+        - arm64
+        - x64
+  category: public.app-category.medical
+  identity: null
