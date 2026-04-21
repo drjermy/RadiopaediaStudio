@@ -26,9 +26,27 @@ let resizeObserver = null;
 let preloadAbort = null;
 let currentViewport = null;
 let currentIsVolume = false;
+let currentOrientation = null;
 let keyHandler = null;
 let wheelHandler = null;
+let voiHandler = null;
 let slabIdx = 0;
+
+function emitState() {
+  if (!currentViewport) return;
+  const props = currentViewport.getProperties?.() ?? {};
+  const voi = props.voiRange || {};
+  const hasVOI = voi.upper != null && voi.lower != null;
+  document.dispatchEvent(new CustomEvent('viewer:state', {
+    detail: {
+      isVolume: currentIsVolume,
+      orientation: currentOrientation,
+      slabMm: SLAB_STEPS[slabIdx],
+      center: hasVOI ? (voi.upper + voi.lower) / 2 : null,
+      width: hasVOI ? voi.upper - voi.lower : null,
+    },
+  }));
+}
 
 async function ensureInitialized() {
   if (initialized) return;
@@ -164,6 +182,7 @@ async function open(folder, container) {
 
   currentViewport = viewport;
   currentIsVolume = asVolume;
+  currentOrientation = asVolume ? OrientationAxis.AXIAL : null;
 
   renderingEngine.resize(true, true);
   viewport.render();
@@ -177,6 +196,15 @@ async function open(folder, container) {
     try { renderingEngine?.resize(true, true); } catch {}
   });
   resizeObserver.observe(element);
+
+  // Fire state updates whenever the VOI (window/level) changes from the
+  // W/L drag tool so the status line below the viewer stays in sync.
+  if (voiHandler) element.removeEventListener(cornerstone.Enums.Events.VOI_MODIFIED, voiHandler);
+  voiHandler = () => emitState();
+  element.addEventListener(cornerstone.Enums.Events.VOI_MODIFIED, voiHandler);
+  // Also emit once images have rendered — gives the status line an initial
+  // W/L reading from whatever the default presentation was.
+  element.addEventListener(cornerstone.Enums.Events.IMAGE_RENDERED, () => emitState(), { once: true });
 
   // In volume mode with a thick slab, take over the wheel so each notch
   // advances by the slab thickness (3 mm slab → 3 mm step). At 1 mm we
@@ -220,8 +248,10 @@ async function open(folder, container) {
     const key = e.key.toLowerCase();
     if (orientMap[key]) {
       e.preventDefault();
+      currentOrientation = orientMap[key];
       currentViewport.setOrientation(orientMap[key]);
       currentViewport.render();
+      emitState();
       return;
     }
     if (e.key === ']') {
@@ -251,7 +281,7 @@ function applySlab() {
     currentViewport.setSlabThickness(mm);
   }
   currentViewport.render();
-  document.dispatchEvent(new CustomEvent('viewer:slab-changed', { detail: { mm } }));
+  emitState();
 }
 
 async function preloadStack(imageIds, signal) {
@@ -285,6 +315,10 @@ function close() {
   if (wheelHandler && element) {
     element.removeEventListener('wheel', wheelHandler, true);
     wheelHandler = null;
+  }
+  if (voiHandler && element) {
+    try { element.removeEventListener(cornerstone.Enums.Events.VOI_MODIFIED, voiHandler); } catch {}
+    voiHandler = null;
   }
   if (renderingEngine) {
     renderingEngine.destroy();

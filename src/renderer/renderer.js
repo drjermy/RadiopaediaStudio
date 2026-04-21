@@ -7,6 +7,7 @@ const viewerSection = document.getElementById('viewer-section');
 const viewerCanvas = document.getElementById('viewer-canvas');
 const viewerTitle = document.getElementById('viewer-title');
 const viewerHint = document.getElementById('viewer-hint');
+const viewerStatus = document.getElementById('viewer-status');
 const btnCloseViewer = document.getElementById('btn-close-viewer');
 const log = document.getElementById('log');
 
@@ -349,10 +350,26 @@ async function openViewerForSeries(studyIdx, seriesIdx) {
 function closeViewer() {
   if (window.viewerAPI?.close) window.viewerAPI.close();
   viewerCanvas.innerHTML = '';
+  viewerStatus.innerHTML = '';
   viewerSection.hidden = true;
 }
 
 btnCloseViewer.addEventListener('click', closeViewer);
+
+document.addEventListener('viewer:state', (e) => {
+  const { isVolume, orientation, slabMm, center, width } = e.detail;
+  const bits = [];
+  if (isVolume) {
+    if (orientation) bits.push(`<span class="k">View</span><span class="v">${orientation}</span>`);
+    if (slabMm != null) bits.push(`<span class="k">Slab</span><span class="v">${slabMm} mm</span>`);
+  } else {
+    bits.push('<span class="k">Mode</span><span class="v">stack</span>');
+  }
+  if (center != null && width != null) {
+    bits.push(`<span class="k">W/L</span><span class="v">${Math.round(center)} / ${Math.round(width)}</span>`);
+  }
+  viewerStatus.innerHTML = bits.map((b) => `<span>${b}</span>`).join('');
+});
 
 function setStudyCollapsed(studyIdx, collapsed) {
   const block = studySummaryEl.querySelector(`.study-block[data-study-idx="${studyIdx}"]`);
@@ -563,14 +580,10 @@ async function inspect(inputPath) {
     return;
   }
 
-  const isDir = info.kind === 'folder';
   pending = { ...info, output: deriveAnonPath(inputPath, info.kind) };
-  inspectedTitle.textContent = isDir ? `Folder: ${info.name}` : `File: ${info.name}`;
-  inspectedSummary.textContent = isDir
-    ? `${info.dicom_count} DICOM file${info.dicom_count === 1 ? '' : 's'} · ${humanBytes(info.total_bytes)}`
-    : humanBytes(info.total_bytes);
-  inspectedPath.textContent = info.input;
-  setState('inspected');
+  // Auto-anonymise — skip the Inspected confirmation panel. Size/count
+  // is shown in the Processing panel's summary line.
+  runAnonymise();
 }
 
 // Anonymise -----------------------------------------------------------------
