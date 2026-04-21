@@ -7,18 +7,14 @@ files:
   - src/renderer/**/*
   - package.json
 extraResources:
-  - from: backend
-    to: backend
+  - from: backend/dist/pacs-anonymizer-backend
+    to: backend-bin
     filter:
       - "**/*"
-      - "!.venv/**"
-      - "!**/__pycache__/**"
-      - "!**/*.egg-info/**"
 mac:
   target:
     - target: dmg
       arch:
         - arm64
-        - x64
   category: public.app-category.medical
   identity: null

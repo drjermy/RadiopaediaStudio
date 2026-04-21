@@ -38,11 +38,14 @@ Covers the `scrub()` core function: PHI stripping, UID regeneration, de-id flag 
 ### Packaging
 
 ```sh
-npm run pack    # unpacked .app in build/mac-arm64/, for smoke-testing
-npm run dist    # full .dmg in build/
+npm run build:backend   # PyInstaller → backend/dist/pacs-anonymizer-backend/
+npm run pack            # unpacked .app in build/mac-arm64/
+npm run dist            # full .dmg in build/
 ```
 
-Output builds currently **do not run standalone** — the packaged `.app` expects a Python venv at `Contents/Resources/backend/.venv/bin/python`, which isn't bundled. Replacing that with a PyInstaller-built binary is the next milestone (see below).
+`pack`/`dist` call `build:backend` first. The backend is shipped as a standalone PyInstaller onedir (~40 MB) at `Contents/Resources/backend-bin/` inside the `.app`. The packaged build runs without a Python install on the user's machine.
+
+Currently arm64-only. Adding x64 / universal2 requires either running the PyInstaller step on an x64 host or switching to universal2 target — not wired yet.
 
 ## Architecture
 
@@ -63,7 +66,6 @@ IPC is **path-based, not multipart** — Electron and Python share the filesyste
 
 ## Known gaps (v0.1)
 
-- **No PyInstaller bundling yet.** Packaged `.app` won't run without a matching `.venv` on disk. Next milestone.
 - **No code signing / notarisation.** `identity: null` in `electron-builder.yml` — Gatekeeper will block the app on first launch until right-click → Open.
-- **Drop zone only accepts single files.** Folder / batch support is Phase 1 scope but not wired yet.
+- **arm64 only.** The bundled PyInstaller binary is host-arch. Needs universal2 work or a parallel x64 build for Intel Macs.
 - **No React.** Intentional for v0.1 per the handoff.

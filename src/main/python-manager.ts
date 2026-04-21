@@ -46,27 +46,52 @@ export interface BackendRoots {
   isPackaged: boolean;
 }
 
-function resolveBackend(roots: BackendRoots): { python: string; cwd: string } {
-  const base = roots.isPackaged
-    ? path.join(roots.resourcesPath, 'backend')
-    : path.join(roots.projectRoot, 'backend');
-  const python = path.join(base, '.venv', 'bin', 'python');
+interface BackendLauncher {
+  command: string;
+  args: string[];
+  cwd: string;
+}
+
+function resolveBackend(roots: BackendRoots, port: number): BackendLauncher {
+  if (roots.isPackaged) {
+    const binary = path.join(
+      roots.resourcesPath,
+      'backend-bin',
+      'pacs-anonymizer-backend',
+    );
+    if (!existsSync(binary)) {
+      throw new Error(
+        `Bundled backend binary not found at ${binary}. ` +
+          'Build: npm run build:backend',
+      );
+    }
+    return {
+      command: binary,
+      args: ['--port', String(port)],
+      cwd: path.dirname(binary),
+    };
+  }
+
+  const backendDir = path.join(roots.projectRoot, 'backend');
+  const python = path.join(backendDir, '.venv', 'bin', 'python');
   if (!existsSync(python)) {
     throw new Error(
-      `Python binary not found at ${python}. ` +
-        (roots.isPackaged
-          ? 'Packaged build requires a bundled backend (PyInstaller — TODO).'
-          : 'Run: python3 -m venv backend/.venv && backend/.venv/bin/pip install -e backend'),
+      `Python venv not found at ${python}. ` +
+        "Run: python3 -m venv backend/.venv && backend/.venv/bin/pip install -e 'backend[dev]'",
     );
   }
-  return { python, cwd: base };
+  return {
+    command: python,
+    args: ['-m', 'app.main', '--port', String(port)],
+    cwd: backendDir,
+  };
 }
 
 export async function startBackend(roots: BackendRoots): Promise<BackendHandle> {
   const port = await pickFreePort();
-  const { python, cwd } = resolveBackend(roots);
+  const { command, args, cwd } = resolveBackend(roots, port);
 
-  const child = spawn(python, ['-m', 'app.main', '--port', String(port)], {
+  const child = spawn(command, args, {
     cwd,
     stdio: ['ignore', 'pipe', 'pipe'],
   });

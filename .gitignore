@@ -8,3 +8,6 @@ out/
 backend/.venv/
 backend/**/__pycache__/
 backend/**/*.egg-info/
+backend/build/
+backend/dist/
+.pytest_cache/
