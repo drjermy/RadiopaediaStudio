@@ -9,9 +9,11 @@ import { init as csToolsInit, ToolGroupManager, StackScrollTool,
          addTool } from '@cornerstonejs/tools';
 import dicomImageLoader from '@cornerstonejs/dicom-image-loader';
 
-const { Enums, RenderingEngine } = cornerstone;
-const { ViewportType } = Enums;
+const { Enums, RenderingEngine, volumeLoader } = cornerstone;
+const { ViewportType, OrientationAxis, BlendModes } = Enums;
 const { MouseBindings } = ToolEnums;
+
+const SLAB_STEPS = [1, 2, 3, 5, 10]; // mm
 
 const RENDERING_ENGINE_ID = 'pacs-anonymizer-engine';
 const VIEWPORT_ID = 'stack-viewport';
@@ -22,6 +24,11 @@ let renderingEngine = null;
 let element = null;
 let resizeObserver = null;
 let preloadAbort = null;
+let currentViewport = null;
+let currentIsVolume = false;
+let keyHandler = null;
+let wheelHandler = null;
+let slabIdx = 0;
 
 async function ensureInitialized() {
   if (initialized) return;
@@ -102,43 +109,149 @@ async function open(folder, container) {
   console.log('[viewer] viewport enabled');
 
   const imageIds = await loadStack(folder);
-  console.log('[viewer] got', imageIds.length, 'imageIds, first:', imageIds[0]);
+  console.log('[viewer] got', imageIds.length, 'imageIds');
 
-  const viewport = renderingEngine.getViewport(VIEWPORT_ID);
-  console.log('[viewer] calling setStack…');
-  try {
-    await viewport.setStack(imageIds, Math.floor(imageIds.length / 2));
-    console.log('[viewer] setStack resolved');
-  } catch (e) {
-    console.error('[viewer] setStack FAILED:', e);
-    throw e;
+  // Try volume viewport first — gives us live axial/coronal/sagittal
+  // reformats via keyboard shortcuts. Falls back to stack viewer for
+  // single-image series or volumes that won't build (mixed orientations).
+  let viewport = null;
+  let asVolume = false;
+  if (imageIds.length >= 3) {
+    try {
+      const viewportInput = {
+        viewportId: VIEWPORT_ID,
+        type: ViewportType.ORTHOGRAPHIC,
+        element,
+        defaultOptions: {
+          orientation: OrientationAxis.AXIAL,
+          background: [0, 0, 0],
+        },
+      };
+      renderingEngine.enableElement(viewportInput);
+
+      const volumeId = `cornerstoneStreamingImageVolume:${folder}`;
+      console.log('[viewer] creating volume…');
+      await volumeLoader.createAndCacheVolume(volumeId, { imageIds });
+
+      viewport = renderingEngine.getViewport(VIEWPORT_ID);
+      await viewport.setVolumes([{ volumeId }]);
+
+      const vol = cornerstone.cache.getVolume(volumeId);
+      vol?.load();  // stream-fill the volume in the background
+
+      asVolume = true;
+      console.log('[viewer] volume viewport ready');
+    } catch (e) {
+      console.warn('[viewer] volume failed, falling back to stack:', e);
+      renderingEngine.disableElement(VIEWPORT_ID);
+    }
   }
 
-  const rect = element.getBoundingClientRect();
-  console.log('[viewer] canvas size:', rect.width, '×', rect.height);
-  // keepCamera: true so the image doesn't get stretched/re-zoomed every
-  // time the window resizes.
+  if (!viewport) {
+    renderingEngine.enableElement({
+      viewportId: VIEWPORT_ID,
+      type: ViewportType.STACK,
+      element,
+    });
+    viewport = renderingEngine.getViewport(VIEWPORT_ID);
+    try {
+      await viewport.setStack(imageIds, Math.floor(imageIds.length / 2));
+    } catch (e) {
+      console.error('[viewer] setStack FAILED:', e);
+      throw e;
+    }
+  }
+
+  currentViewport = viewport;
+  currentIsVolume = asVolume;
+
   renderingEngine.resize(true, true);
   viewport.render();
-  console.log('[viewer] rendered');
+  console.log('[viewer] rendered', asVolume ? '(volume)' : '(stack)');
 
   const tg = ToolGroupManager.getToolGroup(TOOL_GROUP_ID);
   tg.addViewport(VIEWPORT_ID, RENDERING_ENGINE_ID);
-  console.log('[viewer] tools attached');
 
-  // Re-resize on window / panel size changes — Cornerstone locks onto the
-  // element's size when enabled and doesn't follow layout without prompts.
   if (resizeObserver) resizeObserver.disconnect();
   resizeObserver = new ResizeObserver(() => {
     try { renderingEngine?.resize(true, true); } catch {}
   });
   resizeObserver.observe(element);
 
-  // Preload the whole stack in the background so scrolling is instant.
-  // AbortController so we can cancel if the user closes the viewer mid-load.
-  preloadAbort?.abort();
-  preloadAbort = new AbortController();
-  void preloadStack(imageIds, preloadAbort.signal);
+  // In volume mode with a thick slab, take over the wheel so each notch
+  // advances by the slab thickness (3 mm slab → 3 mm step). At 1 mm we
+  // let StackScrollTool handle scrolling natively — this preserves the
+  // trackpad's fine-grained deltaY accumulation which our simple
+  // one-step-per-event override loses.
+  if (wheelHandler) element.removeEventListener('wheel', wheelHandler, true);
+  wheelHandler = (e) => {
+    if (!currentIsVolume || !currentViewport) return;
+    if (slabIdx === 0) return; // native scroll
+    e.preventDefault();
+    e.stopPropagation();
+    const mm = SLAB_STEPS[slabIdx];
+    let normalSpacing = 1;
+    try {
+      normalSpacing = currentViewport.getSpacingInNormalDirection?.() ?? 1;
+    } catch {}
+    const steps = Math.max(1, Math.round(mm / normalSpacing));
+    const dir = e.deltaY > 0 ? 1 : -1;
+    currentViewport.scroll(dir * steps);
+  };
+  element.addEventListener('wheel', wheelHandler, { capture: true, passive: false });
+
+  if (!asVolume) {
+    preloadAbort?.abort();
+    preloadAbort = new AbortController();
+    void preloadStack(imageIds, preloadAbort.signal);
+  }
+
+  // Keyboard shortcuts — only active when the viewer is open.
+  // a/c/s: axial/coronal/sagittal. ]/[ step slab thickness through 1/3/5/10 mm.
+  slabIdx = 0;
+  applySlab();
+  if (keyHandler) document.removeEventListener('keydown', keyHandler);
+  keyHandler = (e) => {
+    if (!currentIsVolume || !currentViewport) return;
+    if (e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+
+    const orientMap = { a: OrientationAxis.AXIAL, c: OrientationAxis.CORONAL, s: OrientationAxis.SAGITTAL };
+    const key = e.key.toLowerCase();
+    if (orientMap[key]) {
+      e.preventDefault();
+      currentViewport.setOrientation(orientMap[key]);
+      currentViewport.render();
+      return;
+    }
+    if (e.key === ']') {
+      e.preventDefault();
+      slabIdx = Math.min(slabIdx + 1, SLAB_STEPS.length - 1);
+      applySlab();
+    } else if (e.key === '[') {
+      e.preventDefault();
+      slabIdx = Math.max(slabIdx - 1, 0);
+      applySlab();
+    }
+  };
+  document.addEventListener('keydown', keyHandler);
+}
+
+function applySlab() {
+  if (!currentViewport || !currentIsVolume) return;
+  const mm = SLAB_STEPS[slabIdx];
+  // At 1 mm, render as a normal slice via composite blend. Above 1 mm,
+  // average the slab so the intensity is meaningful (neutral choice vs
+  // MIP/MinIP which have their own uses).
+  if (mm <= 1) {
+    currentViewport.setBlendMode(BlendModes.COMPOSITE);
+    currentViewport.setSlabThickness(0);
+  } else {
+    currentViewport.setBlendMode(BlendModes.AVERAGE_INTENSITY_BLEND);
+    currentViewport.setSlabThickness(mm);
+  }
+  currentViewport.render();
+  document.dispatchEvent(new CustomEvent('viewer:slab-changed', { detail: { mm } }));
 }
 
 async function preloadStack(imageIds, signal) {
@@ -165,11 +278,21 @@ function close() {
     resizeObserver.disconnect();
     resizeObserver = null;
   }
+  if (keyHandler) {
+    document.removeEventListener('keydown', keyHandler);
+    keyHandler = null;
+  }
+  if (wheelHandler && element) {
+    element.removeEventListener('wheel', wheelHandler, true);
+    wheelHandler = null;
+  }
   if (renderingEngine) {
     renderingEngine.destroy();
     renderingEngine = null;
   }
   element = null;
+  currentViewport = null;
+  currentIsVolume = false;
 }
 
 window.viewerAPI = { open, close };

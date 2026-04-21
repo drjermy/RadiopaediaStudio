@@ -333,7 +333,7 @@ async function openViewerForSeries(studyIdx, seriesIdx) {
     return;
   }
   viewerTitle.textContent = se.description || `Series ${seriesIdx + 1}`;
-  viewerHint.textContent = 'Scroll to page through slices · drag to window/level · middle-click pan · right-click zoom';
+  viewerHint.textContent = 'scroll page · drag W/L · middle pan · right zoom · A/C/S orient · [/] slab 1/2/3/5/10 mm';
   viewerSection.hidden = false;
   // Hide the Create panel while viewing so the layout doesn't compete.
   addVersionPanel.hidden = true;
