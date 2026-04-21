@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, shell } from 'electron';
 import { statSync } from 'fs';
 import * as path from 'path';
 import { BackendHandle, startBackend, stopBackend } from './python-manager';
@@ -49,6 +49,9 @@ app.whenReady().then(async () => {
     } catch {
       return false;
     }
+  });
+  ipcMain.handle('shell:reveal', (_evt, p: string) => {
+    shell.showItemInFolder(p);
   });
 
   await createWindow();

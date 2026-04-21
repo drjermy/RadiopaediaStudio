@@ -2,6 +2,7 @@ appId: com.radiopaedia.pacs-anonymizer
 productName: PACS Anonymizer
 directories:
   output: build
+  buildResources: build-resources
 files:
   - dist/**/*
   - src/renderer/**/*

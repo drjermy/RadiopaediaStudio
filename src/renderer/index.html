@@ -6,6 +6,8 @@
   <style>
     :root {
       color-scheme: light dark;
+      --accent: #0a84ff;
+      --muted: #888;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
     body {
@@ -22,9 +24,11 @@
       font-size: 18px;
       font-weight: 600;
     }
+
+    /* Drop zone */
     #drop {
       flex: 1;
-      border: 2px dashed #888;
+      border: 2px dashed var(--muted);
       border-radius: 12px;
       display: flex;
       align-items: center;
@@ -35,15 +39,67 @@
       transition: border-color 0.15s, background 0.15s;
     }
     #drop.hover {
-      border-color: #0a84ff;
+      border-color: var(--accent);
       background: rgba(10, 132, 255, 0.08);
     }
-    #progress-wrap {
+
+    /* Panels — one shown at a time after inspect */
+    .panel {
+      flex: 1;
+      border: 1px solid rgba(127, 127, 127, 0.3);
+      border-radius: 12px;
+      padding: 24px;
       display: none;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .panel.active { display: flex; }
+    .panel h2 {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 600;
+    }
+    .panel .summary {
+      font-size: 13px;
+      color: #666;
+    }
+    .panel .path {
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-size: 12px;
+      color: #444;
+      word-break: break-all;
+      background: rgba(127, 127, 127, 0.08);
+      padding: 8px 10px;
+      border-radius: 6px;
+    }
+    .actions {
+      display: flex;
+      gap: 8px;
+    }
+    button {
+      font: inherit;
+      font-size: 13px;
+      padding: 6px 14px;
+      border-radius: 6px;
+      border: 1px solid rgba(127, 127, 127, 0.4);
+      background: transparent;
+      color: inherit;
+      cursor: pointer;
+    }
+    button.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: white;
+    }
+    button:hover { filter: brightness(1.1); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* Progress */
+    #progress-wrap {
+      display: flex;
       gap: 12px;
       align-items: center;
     }
-    #progress-wrap.active { display: flex; }
     progress {
       flex: 1;
       height: 8px;
@@ -55,26 +111,63 @@
       min-width: 120px;
       text-align: right;
     }
+
+    /* Log */
     #log {
       font-family: ui-monospace, "SF Mono", Menlo, monospace;
       font-size: 12px;
       background: rgba(127, 127, 127, 0.1);
       padding: 12px;
       border-radius: 8px;
-      max-height: 180px;
+      max-height: 140px;
       overflow: auto;
       white-space: pre-wrap;
     }
+    #log:empty { display: none; }
+
+    /* Layout helper: drop + panels in same visual slot */
+    #main-area { flex: 1; display: flex; flex-direction: column; }
+    #main-area > * { flex: 1; }
   </style>
 </head>
 <body>
   <h1>PACS Anonymizer</h1>
-  <div id="drop">Drop a .dcm file or folder here</div>
-  <div id="progress-wrap">
-    <progress id="progress-bar" value="0" max="1"></progress>
-    <span id="progress-label">0 / 0</span>
+
+  <div id="main-area">
+    <div id="drop">Drop a .dcm file or folder here</div>
+
+    <div id="panel-inspected" class="panel">
+      <h2 id="inspected-title">Ready to anonymise</h2>
+      <p class="summary" id="inspected-summary"></p>
+      <div class="path" id="inspected-path"></div>
+      <div class="actions">
+        <button class="primary" id="btn-anonymise">Anonymise</button>
+        <button id="btn-cancel-inspect">Cancel</button>
+      </div>
+    </div>
+
+    <div id="panel-processing" class="panel">
+      <h2>Anonymising…</h2>
+      <p class="summary" id="processing-summary"></p>
+      <div id="progress-wrap">
+        <progress id="progress-bar" value="0" max="1"></progress>
+        <span id="progress-label">0 / 0</span>
+      </div>
+    </div>
+
+    <div id="panel-done" class="panel">
+      <h2 id="done-title">Done</h2>
+      <p class="summary" id="done-summary"></p>
+      <div class="path" id="done-path"></div>
+      <div class="actions">
+        <button class="primary" id="btn-reveal">Reveal in Finder</button>
+        <button id="btn-reset">Drop another</button>
+      </div>
+    </div>
   </div>
+
   <div id="log"></div>
+
   <script src="./renderer.js"></script>
 </body>
 </html>

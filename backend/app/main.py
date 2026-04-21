@@ -21,9 +21,37 @@ from app.anonymizer import find_dicoms, iter_scrub_folder, scrub_file
 app = FastAPI(title='pacs-anonymizer-backend', version='0.1.0')
 
 
+class InspectRequest(BaseModel):
+    input: str
+
+
 class AnonymizeRequest(BaseModel):
     input: str
     output: str
+
+
+@app.post('/inspect')
+def inspect(req: InspectRequest) -> dict:
+    in_path = Path(req.input)
+    if in_path.is_file():
+        return {
+            'kind': 'file',
+            'name': in_path.name,
+            'input': str(in_path),
+            'dicom_count': 1 if in_path.suffix.lower() == '.dcm' else 0,
+            'total_bytes': in_path.stat().st_size,
+        }
+    if in_path.is_dir():
+        from app.anonymizer import find_dicoms
+        dcms = find_dicoms(in_path)
+        return {
+            'kind': 'folder',
+            'name': in_path.name,
+            'input': str(in_path),
+            'dicom_count': len(dcms),
+            'total_bytes': sum(p.stat().st_size for p in dcms),
+        }
+    raise HTTPException(status_code=400, detail=f'input not found: {in_path}')
 
 
 def _line(obj: dict) -> bytes:

@@ -8,3 +8,7 @@ contextBridge.exposeInMainWorld('fsBridge', {
   pathForFile: (file: File): string => webUtils.getPathForFile(file),
   isDirectory: (p: string): Promise<boolean> => ipcRenderer.invoke('fs:isDirectory', p),
 });
+
+contextBridge.exposeInMainWorld('shellBridge', {
+  reveal: (p: string): Promise<void> => ipcRenderer.invoke('shell:reveal', p),
+});
