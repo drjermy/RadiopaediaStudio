@@ -1,6 +1,6 @@
 // Elements ------------------------------------------------------------------
-const dropAnonymise = document.getElementById('drop-anonymise');
-const dropLoad = document.getElementById('drop-load');
+const drop = document.getElementById('drop');
+const btnOpenFolder = document.getElementById('btn-open-folder');
 const panelInspected = document.getElementById('panel-inspected');
 const panelProcessing = document.getElementById('panel-processing');
 const panelDone = document.getElementById('panel-done');
@@ -69,12 +69,19 @@ function humanBytes(n) {
 
 function setState(next) {
   state = next;
-  const dz = document.getElementById('drop-zones');
-  if (dz) dz.style.display = next === 'idle' ? '' : 'none';
+  drop.style.display = next === 'idle' ? '' : 'none';
+  if (btnOpenFolder) btnOpenFolder.hidden = next !== 'idle';
   panelInspected.classList.toggle('active', next === 'inspected');
   panelProcessing.classList.toggle('active', next === 'processing');
   panelDone.classList.toggle('active', next === 'done');
   btnReset.hidden = next === 'idle';
+}
+
+function basename(p) {
+  if (!p) return '';
+  const s = String(p).replace(/\/+$/, '');
+  const i = s.lastIndexOf('/');
+  return i >= 0 ? s.slice(i + 1) : s;
 }
 
 function appendOutputSuffix(basePath, suffix, kind) {
@@ -361,7 +368,7 @@ btnTrim?.addEventListener('click', async () => {
   const label = `trim-${lo + 1}-${hi + 1}`;
   const output = appendOutputSuffix(folder, label, 'folder');
   btnTrim.disabled = true;
-  processingSummary.textContent = `Trimming → ${output}`;
+  processingSummary.textContent = `Trimming → ${basename(output)}`;
   setState('processing');
   try {
     await runStream('/trim', { input: folder, output, start: lo, end: hi });
@@ -438,7 +445,7 @@ async function saveViewerAsVersion() {
   const suffix = suffixParts.join('-') || 'copy';
   const output = appendOutputSuffix(folder, suffix, 'folder');
 
-  processingSummary.textContent = `Saving ${suffix} version → ${output}`;
+  processingSummary.textContent = `Saving ${suffix} version → ${basename(output)}`;
   setState('processing');
 
   try {
@@ -685,8 +692,8 @@ async function inspect(inputPath) {
 async function runAnonymise() {
   if (!pending) return;
   processingSummary.textContent = pending.kind === 'folder'
-    ? `Anonymising & analysing ${pending.dicom_count} files → ${pending.output}`
-    : `Anonymising & analysing ${pending.name} → ${pending.output}`;
+    ? `Anonymising & analysing ${pending.dicom_count} files → ${basename(pending.output)}`
+    : `Anonymising & analysing ${pending.name} → ${basename(pending.output)}`;
   setState('processing');
 
   try {
@@ -719,7 +726,7 @@ async function runAnonymise() {
 async function loadFolder(folderPath) {
   const port = await window.backend.getPort();
   if (!port) { write('backend not ready'); return; }
-  processingSummary.textContent = `Scanning ${folderPath}…`;
+  processingSummary.textContent = `Scanning ${basename(folderPath)}…`;
   setState('processing');
   try {
     const res = await fetch(`http://127.0.0.1:${port}/scan`, {
@@ -733,7 +740,7 @@ async function loadFolder(folderPath) {
     anonOutput = folderPath;
     renderStudySummary();
     const nSeries = summary.studies?.reduce((a, s) => a + (s.series?.length ?? 0), 0) ?? 0;
-    doneTitle.textContent = `Loaded ${nSeries} series from ${folderPath}`;
+    doneTitle.textContent = `Loaded ${nSeries} series from ${basename(folderPath)}`;
     // No drop-details for load — nothing was dropped/scrubbed.
     dropDetails.hidden = true;
     setState('done');
@@ -747,12 +754,12 @@ async function loadFolder(folderPath) {
 const LAST_FOLDER_KEY = 'pacs-anonymizer:last-folder';
 
 function persistLastFolder(folder) {
-  try { localStorage.setItem(LAST_FOLDER_KEY, folder); } catch {}
+  try { sessionStorage.setItem(LAST_FOLDER_KEY, folder); } catch {}
 }
 
 async function restoreLastFolder() {
   let saved = null;
-  try { saved = localStorage.getItem(LAST_FOLDER_KEY); } catch {}
+  try { saved = sessionStorage.getItem(LAST_FOLDER_KEY); } catch {}
   if (!saved) return;
   // Soft-reload: if the folder vanished between sessions, loadFolder's
   // /scan call will fail cleanly and we fall back to idle.
@@ -880,8 +887,14 @@ function bindDropZone(zone, onDrop) {
   });
 }
 
-bindDropZone(dropAnonymise, (p) => inspect(p));
-bindDropZone(dropLoad, (p) => loadFolder(p));
+bindDropZone(drop, (p) => inspect(p));
+
+btnOpenFolder?.addEventListener('click', async () => {
+  if (state !== 'idle') return;
+  const folder = await window.dialogBridge?.pickFolder?.();
+  if (!folder) return;
+  await loadFolder(folder);
+});
 
 // Buttons -------------------------------------------------------------------
 btnAnonymise.addEventListener('click', runAnonymise);
@@ -896,7 +909,7 @@ btnReset.addEventListener('click', () => {
   dropDetailsBody.innerHTML = '';
   renderStudySummary();
   log.textContent = '';
-  try { localStorage.removeItem(LAST_FOLDER_KEY); } catch {}
+  try { sessionStorage.removeItem(LAST_FOLDER_KEY); } catch {}
   setState('idle');
 });
 

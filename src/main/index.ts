@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import { statSync } from 'fs';
 import * as path from 'path';
 import { BackendHandle, startBackend, stopBackend } from './python-manager';
@@ -59,6 +59,15 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle('shell:reveal', (_evt, p: string) => {
     shell.showItemInFolder(p);
+  });
+  ipcMain.handle('dialog:pickFolder', async (): Promise<string | null> => {
+    if (!mainWindow) return null;
+    const result = await dialog.showOpenDialog(mainWindow, {
+      title: 'Open Folder',
+      properties: ['openDirectory'],
+    });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    return result.filePaths[0];
   });
 
   await createWindow();

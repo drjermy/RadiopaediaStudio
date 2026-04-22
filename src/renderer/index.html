@@ -34,33 +34,33 @@
       gap: 12px;
     }
 
-    /* Drop zones: two side-by-side targets — Anonymise or Load as-is */
-    #drop-zones {
-      display: flex;
-      gap: 12px;
-    }
-    .drop-zone {
+    /* Single drop zone (Anonymise on drop). Open Folder button in the
+       header handles the read-only Load flow. */
+    #drop {
       flex: 1;
       border: 2px dashed var(--muted);
       border-radius: 12px;
       display: flex;
-      flex-direction: column;
       align-items: center;
       justify-content: center;
       text-align: center;
       padding: 24px;
       color: #666;
       transition: border-color 0.15s, background 0.15s;
-      gap: 4px;
     }
-    .drop-zone .drop-title {
-      font-weight: 600;
-      color: #333;
-      font-size: 14px;
-    }
-    .drop-zone.hover {
+    #drop.hover {
       border-color: var(--accent);
       background: rgba(10, 132, 255, 0.08);
+    }
+    .app-header {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+    }
+    .app-header .header-actions {
+      margin-left: auto;
+      display: flex;
+      gap: 8px;
     }
 
     /* Panels — one shown at a time after inspect */
@@ -535,20 +535,14 @@
 <body>
   <div class="app-header">
     <h1>PACS Anonymizer</h1>
-    <button id="btn-reset" hidden>Clear</button>
+    <div class="header-actions">
+      <button id="btn-open-folder">Open Folder</button>
+      <button id="btn-reset" hidden>Clear</button>
+    </div>
   </div>
 
   <div id="main-area">
-    <div id="drop-zones">
-      <div id="drop-anonymise" class="drop-zone">
-        <div class="drop-title">Anonymise</div>
-        <div>Drop a .dcm file or folder — writes an anonymised copy</div>
-      </div>
-      <div id="drop-load" class="drop-zone">
-        <div class="drop-title">Load</div>
-        <div>Drop a folder — opens it as-is, no changes on disk</div>
-      </div>
-    </div>
+    <div id="drop">Drop a .dcm file or folder here to anonymise</div>
 
     <div id="panel-inspected" class="panel">
       <h2 id="inspected-title">Ready to anonymise</h2>

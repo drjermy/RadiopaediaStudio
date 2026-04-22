@@ -16,3 +16,7 @@ contextBridge.exposeInMainWorld('fsBridge', {
 contextBridge.exposeInMainWorld('shellBridge', {
   reveal: (p: string): Promise<void> => ipcRenderer.invoke('shell:reveal', p),
 });
+
+contextBridge.exposeInMainWorld('dialogBridge', {
+  pickFolder: (): Promise<string | null> => ipcRenderer.invoke('dialog:pickFolder'),
+});
