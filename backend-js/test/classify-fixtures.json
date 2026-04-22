@@ -1,0 +1,30 @@
+{
+  "_comment": "Cross-backend contract fixture — see issue #2. Both backend/tests/test_classify_contract.py and backend-js/test/classify-contract.test.mjs read this file and assert their classifier returns the expected output. Any change here must pass both tests.",
+  "transfer_syntax": [
+    { "uid": "1.2.840.10008.1.2",       "expected": { "uid": "1.2.840.10008.1.2",       "name": "uncompressed (implicit LE)", "compressed": false, "lossy": false } },
+    { "uid": "1.2.840.10008.1.2.1",     "expected": { "uid": "1.2.840.10008.1.2.1",     "name": "uncompressed",                "compressed": false, "lossy": false } },
+    { "uid": "1.2.840.10008.1.2.2",     "expected": { "uid": "1.2.840.10008.1.2.2",     "name": "uncompressed (explicit BE)",  "compressed": false, "lossy": false } },
+    { "uid": "1.2.840.10008.1.2.4.50",  "expected": { "uid": "1.2.840.10008.1.2.4.50",  "name": "JPEG baseline",               "compressed": true,  "lossy": true  } },
+    { "uid": "1.2.840.10008.1.2.4.57",  "expected": { "uid": "1.2.840.10008.1.2.4.57",  "name": "JPEG lossless",               "compressed": true,  "lossy": false } },
+    { "uid": "1.2.840.10008.1.2.4.70",  "expected": { "uid": "1.2.840.10008.1.2.4.70",  "name": "JPEG lossless SV1",           "compressed": true,  "lossy": false } },
+    { "uid": "1.2.840.10008.1.2.4.80",  "expected": { "uid": "1.2.840.10008.1.2.4.80",  "name": "JPEG-LS lossless",            "compressed": true,  "lossy": false } },
+    { "uid": "1.2.840.10008.1.2.4.81",  "expected": { "uid": "1.2.840.10008.1.2.4.81",  "name": "JPEG-LS lossy",               "compressed": true,  "lossy": true  } },
+    { "uid": "1.2.840.10008.1.2.4.90",  "expected": { "uid": "1.2.840.10008.1.2.4.90",  "name": "JPEG 2000 lossless",          "compressed": true,  "lossy": false } },
+    { "uid": "1.2.840.10008.1.2.4.91",  "expected": { "uid": "1.2.840.10008.1.2.4.91",  "name": "JPEG 2000 lossy",             "compressed": true,  "lossy": true  } },
+    { "uid": "1.2.840.10008.1.2.4.201", "expected": { "uid": "1.2.840.10008.1.2.4.201", "name": "HTJ2K lossless",              "compressed": true,  "lossy": false } },
+    { "uid": "1.2.840.10008.1.2.4.203", "expected": { "uid": "1.2.840.10008.1.2.4.203", "name": "HTJ2K lossy",                 "compressed": true,  "lossy": true  } },
+    { "uid": "1.2.840.10008.1.2.5",     "expected": { "uid": "1.2.840.10008.1.2.5",     "name": "RLE lossless",                "compressed": true,  "lossy": false } },
+    { "uid": "1.2.840.10008.1.99.unknown", "expected": { "uid": "1.2.840.10008.1.99.unknown", "name": "1.2.840.10008.1.99.unknown", "compressed": true, "lossy": true } },
+    { "uid": null,                      "expected": { "uid": null, "name": "unknown", "compressed": false, "lossy": false } }
+  ],
+  "orientation": [
+    { "iop": [1, 0, 0, 0, 1, 0],             "expected": "axial" },
+    { "iop": [1, 0, 0, 0, -1, 0],            "expected": "axial" },
+    { "iop": [1, 0, 0, 0, 0, -1],            "expected": "coronal" },
+    { "iop": [0, 1, 0, 0, 0, -1],            "expected": "sagittal" },
+    { "iop": [0.99, 0.1, 0, 0.1, 0.99, 0],   "expected": "axial" },
+    { "iop": [0.1, 0.99, 0, 0, 0, -1],       "expected": "sagittal" },
+    { "iop": null,                           "expected": null },
+    { "iop": [1, 0, 0],                      "expected": null }
+  ]
+}

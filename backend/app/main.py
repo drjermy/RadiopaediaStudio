@@ -18,6 +18,10 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from app.anonymizer import find_dicoms, is_dicom_file, iter_scrub_folder, scrub_file, scan_folder
+from app.classify import (
+    classify_transfer_syntax as _classify_transfer_syntax,
+    slice_normal as _slice_normal,
+)
 from app.compress import iter_compress_folder, iter_recompress_in_place
 from app.logsafe import redact_path
 from app.reformat import MODES as REFORMAT_MODES, ORIENTATIONS, iter_reformat_series
@@ -170,7 +174,7 @@ def series_info(req: SeriesInfoRequest) -> dict:
     of the middle slice. Used after a new version is created to refresh
     the study summary with the newly-produced series."""
     import pydicom
-    from app.anonymizer import classify_orientation
+    from app.classify import classify_orientation
     from app.thumbnails import make_thumbnail
 
     folder = Path(req.folder)
@@ -224,24 +228,15 @@ def series_info(req: SeriesInfoRequest) -> dict:
             iop = _tag(first, 'ImageOrientationPatient')
             ipp_a = _tag(first, 'ImagePositionPatient')
             ipp_b = _tag(last, 'ImagePositionPatient')
-            if iop and ipp_a and ipp_b and len(iop) == 6:
-                r = [float(x) for x in iop[:3]]
-                c = [float(x) for x in iop[3:]]
-                n = (
-                    r[1]*c[2] - r[2]*c[1],
-                    r[2]*c[0] - r[0]*c[2],
-                    r[0]*c[1] - r[1]*c[0],
-                )
-                mag = (n[0]**2 + n[1]**2 + n[2]**2) ** 0.5
-                if mag > 0:
-                    n = (n[0]/mag, n[1]/mag, n[2]/mag)
-                    pa = [float(x) for x in ipp_a]
-                    pb = [float(x) for x in ipp_b]
-                    da = pa[0]*n[0] + pa[1]*n[1] + pa[2]*n[2]
-                    db = pb[0]*n[0] + pb[1]*n[1] + pb[2]*n[2]
-                    gap = abs(db - da) / (len(files) - 1)
-                    if gap > 1e-4:
-                        spacing = round(gap * 100) / 100
+            n = _slice_normal(iop) if iop else None
+            if n and ipp_a and ipp_b:
+                pa = [float(x) for x in ipp_a]
+                pb = [float(x) for x in ipp_b]
+                da = pa[0] * n[0] + pa[1] * n[1] + pa[2] * n[2]
+                db = pb[0] * n[0] + pb[1] * n[1] + pb[2] * n[2]
+                gap = abs(db - da) / (len(files) - 1)
+                if gap > 1e-4:
+                    spacing = round(gap * 100) / 100
         except Exception:
             pass
 
@@ -274,45 +269,6 @@ def series_info(req: SeriesInfoRequest) -> dict:
         'window_center': _first_num('WindowCenter'),
         'window_width':  _first_num('WindowWidth'),
     }
-
-
-_TS_NAMES = {
-    '1.2.840.10008.1.2':       'uncompressed (implicit LE)',
-    '1.2.840.10008.1.2.1':     'uncompressed',
-    '1.2.840.10008.1.2.2':     'uncompressed (explicit BE)',
-    '1.2.840.10008.1.2.4.50':  'JPEG baseline',
-    '1.2.840.10008.1.2.4.51':  'JPEG extended',
-    '1.2.840.10008.1.2.4.57':  'JPEG lossless',
-    '1.2.840.10008.1.2.4.70':  'JPEG lossless SV1',
-    '1.2.840.10008.1.2.4.80':  'JPEG-LS lossless',
-    '1.2.840.10008.1.2.4.81':  'JPEG-LS lossy',
-    '1.2.840.10008.1.2.4.90':  'JPEG 2000 lossless',
-    '1.2.840.10008.1.2.4.91':  'JPEG 2000 lossy',
-    '1.2.840.10008.1.2.4.92':  'JPEG 2000 pt2 lossless',
-    '1.2.840.10008.1.2.4.93':  'JPEG 2000 pt2 lossy',
-    '1.2.840.10008.1.2.4.201': 'HTJ2K lossless',
-    '1.2.840.10008.1.2.4.202': 'HTJ2K lossless-only',
-    '1.2.840.10008.1.2.4.203': 'HTJ2K lossy',
-    '1.2.840.10008.1.2.5':     'RLE lossless',
-}
-_TS_UNCOMPRESSED = {'1.2.840.10008.1.2', '1.2.840.10008.1.2.1', '1.2.840.10008.1.2.2'}
-_TS_LOSSLESS = {
-    '1.2.840.10008.1.2.4.57', '1.2.840.10008.1.2.4.70',
-    '1.2.840.10008.1.2.4.80', '1.2.840.10008.1.2.4.90',
-    '1.2.840.10008.1.2.4.92', '1.2.840.10008.1.2.4.201',
-    '1.2.840.10008.1.2.4.202', '1.2.840.10008.1.2.5',
-}
-
-
-def _classify_transfer_syntax(uid: str | None) -> dict:
-    if not uid:
-        return {'uid': None, 'name': 'unknown', 'compressed': False, 'lossy': False}
-    name = _TS_NAMES.get(uid, uid)
-    if uid in _TS_UNCOMPRESSED:
-        return {'uid': uid, 'name': name, 'compressed': False, 'lossy': False}
-    if uid in _TS_LOSSLESS:
-        return {'uid': uid, 'name': name, 'compressed': True, 'lossy': False}
-    return {'uid': uid, 'name': name, 'compressed': True, 'lossy': True}
 
 
 @app.post('/thumbnails')

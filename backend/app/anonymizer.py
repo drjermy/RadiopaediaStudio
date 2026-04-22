@@ -20,7 +20,25 @@ import pydicom
 from pydicom.datadict import keyword_for_tag
 from pydicom.uid import generate_uid
 
+from app.classify import (
+    classify_orientation,
+    classify_transfer_syntax,
+    median_spacing as _median_spacing,
+    slice_normal as _slice_normal,
+)
 from app.logsafe import redact_path
+
+__all__ = [
+    'KEEP_TAGS',
+    'classify_orientation',
+    'find_dicoms',
+    'is_dicom_file',
+    'iter_scrub_folder',
+    'scan_folder',
+    'scrub',
+    'scrub_file',
+    'strip_phi',
+]
 
 KEEP_TAGS = {
     # File meta / identification
@@ -163,28 +181,6 @@ def find_dicoms(input_dir: Path) -> list[Path]:
     # the base series and its derived variants (folder name + suffix) can
     # land in any sequence, and the renderer just shows them in order.
     return sorted(p for p in input_dir.rglob('*') if is_dicom_file(p))
-
-
-def classify_orientation(iop) -> str | None:
-    """Classify an ImageOrientationPatient vector as axial, coronal, or
-    sagittal based on the dominant axis of the slice normal. Returns None
-    if the IOP isn't valid."""
-    if not iop or len(iop) != 6:
-        return None
-    try:
-        r = [float(v) for v in iop[:3]]
-        c = [float(v) for v in iop[3:]]
-    except (ValueError, TypeError):
-        return None
-    # normal = row × col
-    n = [
-        r[1] * c[2] - r[2] * c[1],
-        r[2] * c[0] - r[0] * c[2],
-        r[0] * c[1] - r[1] * c[0],
-    ]
-    abs_n = [abs(x) for x in n]
-    axes = ('sagittal', 'coronal', 'axial')  # index matches argmax of normal
-    return axes[abs_n.index(max(abs_n))]
 
 
 def _safe_float(v):
@@ -379,7 +375,10 @@ def scan_folder(input_dir: Path) -> dict:
                 'slice_spacing': _safe_float(ds.get('SpacingBetweenSlices', None)),
                 'slice_count': 0,
                 'total_bytes': 0,
-                'transfer_syntax': _ts_info(ds),
+                'transfer_syntax': classify_transfer_syntax(
+                    str(ds.file_meta.TransferSyntaxUID)
+                    if getattr(ds, 'file_meta', None) else None
+                ),
                 'window_center': _first_num(ds.get('WindowCenter', None)),
                 'window_width':  _first_num(ds.get('WindowWidth',  None)),
             }
@@ -425,85 +424,6 @@ def scan_folder(input_dir: Path) -> dict:
         study['series'] = out_series
         out_studies.append(study)
     return {'studies': out_studies}
-
-
-def _slice_normal(iop):
-    if not iop or len(iop) != 6:
-        return None
-    try:
-        r = [float(x) for x in iop[:3]]
-        c = [float(x) for x in iop[3:]]
-    except (ValueError, TypeError):
-        return None
-    n = (
-        r[1]*c[2] - r[2]*c[1],
-        r[2]*c[0] - r[0]*c[2],
-        r[0]*c[1] - r[1]*c[0],
-    )
-    mag = (n[0]**2 + n[1]**2 + n[2]**2) ** 0.5
-    if mag == 0:
-        return None
-    return (n[0]/mag, n[1]/mag, n[2]/mag)
-
-
-def _median_spacing(positions):
-    if not positions or len(positions) < 2:
-        return None
-    sorted_pos = sorted(positions)
-    gaps = []
-    for i in range(1, len(sorted_pos)):
-        g = abs(sorted_pos[i] - sorted_pos[i-1])
-        if g > 1e-4:
-            gaps.append(g)
-    if not gaps:
-        return None
-    gaps.sort()
-    mid = len(gaps) // 2
-    med = gaps[mid] if len(gaps) % 2 else (gaps[mid-1] + gaps[mid]) / 2
-    return round(med * 100) / 100
-
-
-def _ts_info(ds) -> dict:
-    """Transfer-syntax classification matching the JS/Python anonymiser paths."""
-    uid = None
-    try:
-        uid = str(ds.file_meta.TransferSyntaxUID) if getattr(ds, 'file_meta', None) else None
-    except Exception:
-        pass
-    names = {
-        '1.2.840.10008.1.2':       'uncompressed (implicit LE)',
-        '1.2.840.10008.1.2.1':     'uncompressed',
-        '1.2.840.10008.1.2.2':     'uncompressed (explicit BE)',
-        '1.2.840.10008.1.2.4.50':  'JPEG baseline',
-        '1.2.840.10008.1.2.4.51':  'JPEG extended',
-        '1.2.840.10008.1.2.4.57':  'JPEG lossless',
-        '1.2.840.10008.1.2.4.70':  'JPEG lossless SV1',
-        '1.2.840.10008.1.2.4.80':  'JPEG-LS lossless',
-        '1.2.840.10008.1.2.4.81':  'JPEG-LS lossy',
-        '1.2.840.10008.1.2.4.90':  'JPEG 2000 lossless',
-        '1.2.840.10008.1.2.4.91':  'JPEG 2000 lossy',
-        '1.2.840.10008.1.2.4.92':  'JPEG 2000 pt2 lossless',
-        '1.2.840.10008.1.2.4.93':  'JPEG 2000 pt2 lossy',
-        '1.2.840.10008.1.2.4.201': 'HTJ2K lossless',
-        '1.2.840.10008.1.2.4.202': 'HTJ2K lossless-only',
-        '1.2.840.10008.1.2.4.203': 'HTJ2K lossy',
-        '1.2.840.10008.1.2.5':     'RLE lossless',
-    }
-    uncompressed = {'1.2.840.10008.1.2', '1.2.840.10008.1.2.1', '1.2.840.10008.1.2.2'}
-    lossless_compressed = {
-        '1.2.840.10008.1.2.4.57', '1.2.840.10008.1.2.4.70',
-        '1.2.840.10008.1.2.4.80', '1.2.840.10008.1.2.4.90',
-        '1.2.840.10008.1.2.4.92', '1.2.840.10008.1.2.4.201',
-        '1.2.840.10008.1.2.4.202', '1.2.840.10008.1.2.5',
-    }
-    if not uid:
-        return {'uid': None, 'name': 'unknown', 'compressed': False, 'lossy': False}
-    name = names.get(uid, uid)
-    if uid in uncompressed:
-        return {'uid': uid, 'name': name, 'compressed': False, 'lossy': False}
-    if uid in lossless_compressed:
-        return {'uid': uid, 'name': name, 'compressed': True, 'lossy': False}
-    return {'uid': uid, 'name': name, 'compressed': True, 'lossy': True}
 
 
 def _common_parent(paths: list[Path]) -> Path:

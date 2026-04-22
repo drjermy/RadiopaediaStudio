@@ -17,6 +17,13 @@ import { parseArgs } from 'node:util';
 
 import { Message, Anonymize } from 'dicomanon';
 
+import {
+  classifyOrientationArr,
+  classifyTransferSyntax,
+  medianSpacing,
+  sliceNormal,
+} from './classify.mjs';
+
 // Keep absolute filesystem paths out of logs and streaming `error` events —
 // once upload/telemetry is live, a pre-anon folder name like
 // `PATIENT_SMITH_JOHN_2026` is PHI. Return just enough context (parent-folder
@@ -143,116 +150,11 @@ function safeNum(v) {
   return Number.isFinite(n) ? n : null;
 }
 
-function classifyOrientation(iop) {
-  if (!iop || typeof iop !== 'object' || !iop.Value) {
-    // iop may be a TagValue; try to extract Values array
-    return null;
-  }
-}
-
-// We classify from an explicit 6-number IOP array. Use Tag lookup helper
-// instead (see commonTags below).
-// Unit normal to the slice plane from the 6-number IOP (row + col vectors).
-// Used to project ImagePositionPatient onto a 1-D axis for spacing calc.
-function sliceNormal(values) {
-  if (!values || values.length !== 6) return null;
-  const r = values.slice(0, 3).map(Number);
-  const c = values.slice(3).map(Number);
-  if (r.some((x) => !Number.isFinite(x)) || c.some((x) => !Number.isFinite(x))) return null;
-  const n = [
-    r[1] * c[2] - r[2] * c[1],
-    r[2] * c[0] - r[0] * c[2],
-    r[0] * c[1] - r[1] * c[0],
-  ];
-  const mag = Math.hypot(n[0], n[1], n[2]);
-  if (mag === 0) return null;
-  return [n[0] / mag, n[1] / mag, n[2] / mag];
-}
-
-// Median absolute gap between adjacent positions along the slice normal.
-// Returns null when fewer than 2 positions or all coincident.
-function medianSpacing(positions) {
-  if (!positions || positions.length < 2) return null;
-  const sorted = [...positions].sort((a, b) => a - b);
-  const gaps = [];
-  for (let i = 1; i < sorted.length; i++) {
-    const g = Math.abs(sorted[i] - sorted[i - 1]);
-    if (g > 1e-4) gaps.push(g);
-  }
-  if (gaps.length === 0) return null;
-  gaps.sort((a, b) => a - b);
-  const m = gaps.length >> 1;
-  const med = gaps.length % 2 ? gaps[m] : (gaps[m - 1] + gaps[m]) / 2;
-  return Math.round(med * 100) / 100;
-}
-
-function classifyOrientationArr(values) {
-  if (!values || values.length !== 6) return null;
-  const r = values.slice(0, 3).map(Number);
-  const c = values.slice(3).map(Number);
-  if (r.some(Number.isNaN) || c.some(Number.isNaN)) return null;
-  const n = [
-    r[1] * c[2] - r[2] * c[1],
-    r[2] * c[0] - r[0] * c[2],
-    r[0] * c[1] - r[1] * c[0],
-  ];
-  const absN = n.map(Math.abs);
-  const idx = absN.indexOf(Math.max(...absN));
-  return ['sagittal', 'coronal', 'axial'][idx];
-}
-
 function getTagValues(dict, keyword) {
   const tagKey = KEYWORD_TO_TAG.get(keyword);
   if (!tagKey) return null;
   const v = dict[tagKey];
   return v && Array.isArray(v.Value) ? v.Value : null;
-}
-
-// Transfer syntax classification ---------------------------------------
-
-const TS_NAMES = {
-  '1.2.840.10008.1.2':       'uncompressed (implicit LE)',
-  '1.2.840.10008.1.2.1':     'uncompressed',
-  '1.2.840.10008.1.2.2':     'uncompressed (explicit BE)',
-  '1.2.840.10008.1.2.4.50':  'JPEG baseline',
-  '1.2.840.10008.1.2.4.51':  'JPEG extended',
-  '1.2.840.10008.1.2.4.57':  'JPEG lossless',
-  '1.2.840.10008.1.2.4.70':  'JPEG lossless SV1',
-  '1.2.840.10008.1.2.4.80':  'JPEG-LS lossless',
-  '1.2.840.10008.1.2.4.81':  'JPEG-LS lossy',
-  '1.2.840.10008.1.2.4.90':  'JPEG 2000 lossless',
-  '1.2.840.10008.1.2.4.91':  'JPEG 2000 lossy',
-  '1.2.840.10008.1.2.4.92':  'JPEG 2000 pt2 lossless',
-  '1.2.840.10008.1.2.4.93':  'JPEG 2000 pt2 lossy',
-  '1.2.840.10008.1.2.4.201': 'HTJ2K lossless',
-  '1.2.840.10008.1.2.4.202': 'HTJ2K lossless-only',
-  '1.2.840.10008.1.2.4.203': 'HTJ2K lossy',
-  '1.2.840.10008.1.2.5':     'RLE lossless',
-};
-
-const TS_UNCOMPRESSED = new Set([
-  '1.2.840.10008.1.2',
-  '1.2.840.10008.1.2.1',
-  '1.2.840.10008.1.2.2',
-]);
-
-const TS_LOSSLESS = new Set([
-  '1.2.840.10008.1.2.4.57',
-  '1.2.840.10008.1.2.4.70',
-  '1.2.840.10008.1.2.4.80',
-  '1.2.840.10008.1.2.4.90',
-  '1.2.840.10008.1.2.4.92',
-  '1.2.840.10008.1.2.4.201',
-  '1.2.840.10008.1.2.4.202',
-  '1.2.840.10008.1.2.5',
-]);
-
-function classifyTransferSyntax(uid) {
-  if (!uid) return { uid: null, name: 'unknown', compressed: false, lossy: false };
-  const name = TS_NAMES[uid] || uid;
-  if (TS_UNCOMPRESSED.has(uid)) return { uid, name, compressed: false, lossy: false };
-  if (TS_LOSSLESS.has(uid))     return { uid, name, compressed: true,  lossy: false };
-  return { uid, name, compressed: true, lossy: true };
 }
 
 function commonParent(paths) {
