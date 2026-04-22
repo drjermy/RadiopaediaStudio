@@ -259,6 +259,7 @@ async function openViewerForSeries(studyIdx, seriesIdx, opts = {}) {
     return;
   }
   viewerContext = { studyIdx, seriesIdx, folder: se.folder, trimOnly };
+  refreshActiveThumbnail();
   viewerState = null;
   viewerTitle.textContent = trimOnly
     ? `Trim — ${se.description || `Series ${seriesIdx + 1}`}`
@@ -407,6 +408,19 @@ function closeViewer() {
   viewerSection.classList.remove('trim-only');
   viewerContext = null;
   viewerState = null;
+  refreshActiveThumbnail();
+}
+
+// Drive the thumbnail's .active class from viewerContext. Cheaper than
+// a full renderStudySummary rebuild.
+function refreshActiveThumbnail() {
+  const active = viewerContext;
+  for (const li of studySummaryEl.querySelectorAll('.series-list li')) {
+    const match = active
+      && String(active.studyIdx)  === li.dataset.studyIdx
+      && String(active.seriesIdx) === li.dataset.seriesIdx;
+    li.classList.toggle('active', !!match);
+  }
 }
 
 async function saveViewerAsVersion() {
@@ -588,6 +602,11 @@ function renderStudySummary() {
         const li = document.createElement('li');
         li.dataset.studyIdx = String(si);
         li.dataset.seriesIdx = String(i);
+        if (viewerContext
+            && viewerContext.studyIdx === si
+            && viewerContext.seriesIdx === i) {
+          li.classList.add('active');
+        }
         // Thumbnails are clickable — they open the viewer. The "+" card
         // is still the only way to create a new derived series.
         if (se.folder) {
