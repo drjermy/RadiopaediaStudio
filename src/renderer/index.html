@@ -307,8 +307,7 @@
     /* Trim-only viewer mode: hide everything except image + slider + Trim */
     #viewer-section.trim-only .viewer-actions > *:not(#btn-close-viewer),
     #viewer-section.trim-only #viewer-hint,
-    #viewer-section.trim-only #viewer-status,
-    #viewer-section.trim-only .viewer-compress {
+    #viewer-section.trim-only .viewer-data-row {
       display: none !important;
     }
     .study-summary .series-list .series-desc {
@@ -397,7 +396,27 @@
     }
     .viewer-status .k { color: #999; margin-right: 4px; }
     .viewer-status .v { color: #333; font-weight: 500; }
-    .viewer-compress { margin-top: 2px; }
+    /* Data row beneath the viewer: status (W/L, View, Thickness) on the
+       left, window preset selector on the right. */
+    .viewer-data-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 2px 4px;
+    }
+    .viewer-data-row .viewer-status { flex: 1; padding: 0; }
+    .viewer-data-row select {
+      font-size: 12px;
+      padding: 2px 6px;
+    }
+    .inline-label {
+      font-size: 12px;
+      color: #555;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .inline-label input[type="number"] { width: 52px; }
 
     /* Dual-handle trim slider — two range inputs layered on one track.
        Hands-down simplest trick: position the thumbs with pointer-events,
@@ -612,16 +631,22 @@
         <div class="viewer-header">
           <h2 id="viewer-title">Viewer</h2>
           <div class="viewer-actions">
-            <select id="viewer-preset" title="Apply a window preset">
-              <option value="">Preset…</option>
-              <option value="__reset">Reset (space)</option>
-            </select>
+            <label class="inline-label">Compress:
+              <select id="viewer-compress-mode">
+                <option value="">none</option>
+                <option value="lossless">JPEG 2000 lossless</option>
+                <option value="lossy">JPEG 2000 lossy</option>
+              </select>
+            </label>
+            <label id="viewer-compress-ratio-label" class="inline-label" hidden>
+              <input type="number" id="viewer-compress-ratio" value="12" min="2" step="1" />:1
+            </label>
             <button class="primary" id="btn-save-viewer" title="Save current view as a derived series">Save</button>
             <button id="btn-close-viewer" class="icon-btn" aria-label="Close">×</button>
           </div>
         </div>
-        <div id="viewer-hint" class="viewer-hint"></div>
         <div id="viewer-canvas"></div>
+        <div id="viewer-hint" class="viewer-hint"></div>
         <div id="viewer-trim" class="viewer-trim" hidden>
           <div class="trim-track">
             <div class="trim-fill" id="trim-fill"></div>
@@ -633,24 +658,13 @@
             <button id="btn-trim" class="trim-btn" disabled>Trim</button>
           </div>
         </div>
-        <div id="viewer-status" class="viewer-status"></div>
-        <fieldset class="op-group viewer-compress">
-          <legend>Save compression</legend>
-          <label>Mode:
-            <select id="viewer-compress-mode">
-              <option value="">none</option>
-              <option value="lossless">JPEG 2000 lossless</option>
-              <option value="lossy">JPEG 2000 lossy</option>
-            </select>
-          </label>
-          <label id="viewer-compress-ratio-label" hidden>Ratio:
-            <input type="number" id="viewer-compress-ratio" value="12" min="2" step="1" />:1
-          </label>
-          <small class="hint">
-            Applied when you click <strong>Save</strong>. Lossy ratios for
-            teaching use only (CT/MR 12, DX 20, MG 25).
-          </small>
-        </fieldset>
+        <div class="viewer-data-row">
+          <div id="viewer-status" class="viewer-status"></div>
+          <select id="viewer-preset" title="Apply a window preset">
+            <option value="">Preset…</option>
+            <option value="__reset">Reset (space)</option>
+          </select>
+        </div>
       </div>
 
 
