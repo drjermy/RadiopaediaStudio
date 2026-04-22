@@ -90,6 +90,11 @@ class TransformRequest(BaseModel):
 
 class DeleteSeriesRequest(BaseModel):
     folder: str
+    # Anonymise-output root that owns this folder. The renderer supplies it
+    # from the anonymise `summary.output` (or the last-loaded folder). We
+    # refuse to delete anything outside this parent so a malformed/injected
+    # request can't wipe arbitrary paths on disk.
+    allowed_parent: str
 
 
 @app.post('/inspect')
@@ -603,10 +608,20 @@ def scan(req: InspectRequest) -> dict:
 @app.post('/delete-series')
 def delete_series(req: DeleteSeriesRequest) -> dict:
     """Remove a series folder from disk. Used by the Delete button on the
-    thumbnail to drop anonymised or derived series. Only directories
-    containing DICOM files are accepted — refuses to recurse into
-    arbitrary paths so a malformed request can't wipe the user's home."""
+    thumbnail to drop anonymised or derived series. The folder must resolve
+    to a subpath of the caller-supplied `allowed_parent` (the anonymise
+    output root) AND contain DICOM files — belt-and-braces against both
+    traversal (`..`) and bare paths the app never produced."""
     folder = Path(req.folder).resolve()
+    allowed_parent = Path(req.allowed_parent).resolve()
+    if not allowed_parent.is_dir():
+        raise HTTPException(status_code=400, detail=f'allowed_parent is not a directory: {allowed_parent}')
+    if folder == allowed_parent:
+        raise HTTPException(status_code=400, detail=f'refusing to delete allowed_parent itself: {folder}')
+    try:
+        folder.relative_to(allowed_parent)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f'{folder} is not under allowed_parent {allowed_parent}')
     if not folder.is_dir():
         raise HTTPException(status_code=400, detail=f'not a directory: {folder}')
     if not find_dicoms(folder):

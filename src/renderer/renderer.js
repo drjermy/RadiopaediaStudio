@@ -862,11 +862,12 @@ async function deleteSeries(studyIdx, seriesIdx) {
   if (viewerContext?.folder === se.folder) closeViewer();
   const port = await window.backend.getPort();
   if (!port) { write('backend not ready'); return; }
+  if (!anonOutput) { write('no anonymise root known; refusing to delete'); return; }
   try {
     const res = await fetch(`http://127.0.0.1:${port}/delete-series`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ folder: se.folder }),
+      body: JSON.stringify({ folder: se.folder, allowed_parent: anonOutput }),
     });
     if (!res.ok) throw new Error(await res.text());
     // Mutate the study summary and re-render.
