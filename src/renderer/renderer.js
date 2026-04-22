@@ -285,6 +285,25 @@ async function setupTrim(series) {
   updateTrimUI();
 }
 
+// Reshape the trim slider for the current orientation/spacing. The viewer
+// emits sliceCount = volume extent along current normal ÷ slabSpacing, so
+// each tick moves by slabSpacing (matches axial-at-source behaviour). Keep
+// the user's current selection as a fraction of the old range.
+function syncTrimCount(newCount) {
+  if (!newCount || newCount < 2 || viewerTrim.hidden) return;
+  if (newCount === trimCount) return;
+  const prevCount = trimCount;
+  const prevLo = parseInt(trimStart.value, 10) || 0;
+  const prevHi = parseInt(trimEnd.value, 10) || 0;
+  const scale = (i) => Math.round(i * (newCount - 1) / Math.max(1, prevCount - 1));
+  trimCount = newCount;
+  trimStart.max = trimEnd.max = String(trimCount - 1);
+  trimStart.value = String(Math.max(0, Math.min(trimCount - 1, scale(prevLo))));
+  trimEnd.value   = String(Math.max(0, Math.min(trimCount - 1, scale(prevHi))));
+  updateTrimUI();
+  pushTrimRangeToViewer();
+}
+
 function currentTrim() {
   if (viewerTrim.hidden || !trimCount) return null;
   const start = parseInt(trimStart.value, 10) || 0;
@@ -438,8 +457,9 @@ function thicknessLabel({ slabThickness, slabSpacing, isAtNative }) {
 
 document.addEventListener('viewer:state', (e) => {
   viewerState = e.detail;
-  const { isVolume, orientation, slabThickness, slabSpacing, isAtNative,
-          center, width } = e.detail;
+  const { isVolume, orientation, slabThickness, slabSpacing, sliceCount,
+          isAtNative, center, width } = e.detail;
+  if (sliceCount) syncTrimCount(sliceCount);
   const bits = [];
   if (isVolume) {
     if (orientation) bits.push(`<span class="k">View</span><span class="v">${orientation}</span>`);

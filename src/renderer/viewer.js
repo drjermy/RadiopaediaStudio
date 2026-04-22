@@ -78,6 +78,29 @@ function pickDefaultSlab() {
   slabSpacing   = Math.max(spacingFloor(),   sourceSpacing   ?? spacingFloor());
 }
 
+// Volume dimension index along the current viewport normal. Used to
+// translate "slice N at slabSpacing" into volume voxel positions for trim
+// and goToSlice.
+function orientationNormalDimIdx() {
+  if (currentOrientation === OrientationAxis.CORONAL)  return 1;
+  if (currentOrientation === OrientationAxis.SAGITTAL) return 0;
+  return 2; // axial / default
+}
+
+// Number of slider positions at the current slabSpacing — extent of the
+// volume along the current view normal divided by the step size.
+function currentSliceCount() {
+  if (!currentIsVolume || !currentVolumeId) return null;
+  const vol = cornerstone.cache.getVolume?.(currentVolumeId);
+  if (!vol) return null;
+  const dims = vol.dimensions ?? [0, 0, 0];
+  const spac = vol.spacing ?? [1, 1, 1];
+  const idx = orientationNormalDimIdx();
+  const extent = dims[idx] * spac[idx];
+  if (!extent || !slabSpacing) return null;
+  return Math.max(1, Math.floor(extent / slabSpacing));
+}
+
 function isAtNative() {
   // "Native" means we're rendering at the source acquisition values. In the
   // acquisition orientation that coincides with the floor; elsewhere the
@@ -118,6 +141,7 @@ function emitState() {
       orientation: currentOrientation,
       slabThickness: currentIsVolume ? slabThickness : null,
       slabSpacing:   currentIsVolume ? slabSpacing   : null,
+      sliceCount:    currentIsVolume ? currentSliceCount() : null,
       isAtNative: atNative,
       isDefaultView,
       center,
@@ -508,16 +532,15 @@ function goToSlice(idx) {
       const camera = v.getCamera();
       const normal = camera.viewPlaneNormal;
       if (!normal) return;
-      const spacing = rawNormalSpacingMm();
-      // Total slices along this orientation — infer from imageIds length,
-      // which matches the acquisition count in the common case.
-      const imageIds = v.getImageIds?.() ?? [];
-      const n = imageIds.length || 1;
+      // Slider ticks step by the current slabSpacing (the denominator), not
+      // the voxel grid — so "slice 5" in coronal at 3/2 mm lands at 10 mm,
+      // same feel as axial. Clamp to the volume's extent along this normal.
+      const grid = rawNormalSpacingMm();
+      const n = currentSliceCount() ?? 1;
       const clamped = Math.max(0, Math.min(n - 1, target));
-      // Compute the camera shift needed. We use the current focalPoint as
-      // reference, derive where slice 0 sits, then jump to the target slice.
       const currentSlice = v.getSliceIndex?.() ?? 0;
-      const delta = (clamped - currentSlice) * spacing;
+      const targetVoxel = Math.round(clamped * slabSpacing / grid);
+      const delta = (targetVoxel - currentSlice) * grid;
       const fp = camera.focalPoint;
       const pos = camera.position;
       const newFocal = [
