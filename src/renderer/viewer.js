@@ -13,8 +13,6 @@ const { Enums, RenderingEngine, volumeLoader } = cornerstone;
 const { ViewportType, OrientationAxis, BlendModes } = Enums;
 const { MouseBindings } = ToolEnums;
 
-const SLAB_STEPS = [1, 2, 3, 5, 10]; // mm
-
 const RENDERING_ENGINE_ID = 'pacs-anonymizer-engine';
 const VIEWPORT_ID = 'stack-viewport';
 const TOOL_GROUP_ID = 'pacs-tools';
@@ -33,44 +31,62 @@ let voiHandler = null;
 let cameraHandler = null;
 let trimRange = null; // { start, end } inclusive; null = unrestricted
 let clampInFlight = false;
-let slabIdx = 0;
+let slabThickness = 1;        // mm, current rendered slab thickness (numerator)
+let slabSpacing = 1;          // mm, current scroll step (denominator)
 let sourceThickness = null;   // SliceThickness from acquisition, mm
 let sourceSpacing = null;     // computed slice spacing along normal, mm
 let sourceOrientation = null; // 'axial' | 'coronal' | 'sagittal' — acquisition plane
+let currentVolumeId = null;   // unique per-open so we never reuse a cached
+                              // volume actor that was bound to a destroyed engine
 
-function nativeSpacingMm() {
-  // When viewing in the acquisition orientation, the true Z resolution is
-  // the source slice thickness (e.g. 3 mm CT) — not the in-plane voxel
-  // spacing the volume happens to be sampled at. Use whichever is larger
-  // so the slab readout reflects the actual acquired thickness.
-  let spacing = 1;
-  if (currentViewport) {
-    try { spacing = currentViewport.getSpacingInNormalDirection?.() ?? 1; } catch {}
-  }
+// Raw voxel spacing along the current slice normal (cornerstone's view of
+// the volume grid). Used as the rendering floor — anything less is just
+// resampling the same voxel — and as the wheel scroll quantum.
+function rawNormalSpacingMm() {
+  if (!currentViewport) return 1;
+  try { return currentViewport.getSpacingInNormalDirection?.() ?? 1; } catch { return 1; }
+}
+
+// Smallest meaningful thickness in the current orientation: cornerstone's
+// voxel grid, raised to the source slice thickness when viewing in the
+// acquisition plane (so a 3 mm CT can't pretend to be a 1 mm slice).
+function thicknessFloor() {
+  let f = rawNormalSpacingMm();
   if (sourceThickness != null && currentOrientation === sourceOrientation) {
-    spacing = Math.max(spacing, sourceThickness);
+    f = Math.max(f, sourceThickness);
   }
-  return spacing;
+  return Math.max(1, Math.round(f));
 }
 
-function effectiveSlab() {
-  // Requested thickness is floored to the native voxel spacing along the
-  // current slice normal — we can't meaningfully render thinner than the
-  // acquisition. Reports both the effective mm and whether we hit the floor.
-  const requested = SLAB_STEPS[slabIdx];
-  const native = nativeSpacingMm();
-  const mm = Math.max(requested, native);
-  return { requested, native, mm, isNative: requested <= native };
+// Smallest meaningful spacing — same idea but uses the source slice spacing
+// (which is < thickness for overlapping reconstructions).
+function spacingFloor() {
+  let f = rawNormalSpacingMm();
+  if (sourceSpacing != null && currentOrientation === sourceOrientation) {
+    f = Math.max(f, sourceSpacing);
+  }
+  return Math.max(1, Math.round(f));
 }
 
-function pickDefaultSlabIdx() {
-  // Start at the smallest SLAB_STEPS entry ≥ native voxel spacing — so
-  // a 3 mm CT opens at 3 mm by default, not a misleading 1 mm.
-  const native = nativeSpacingMm();
-  for (let i = 0; i < SLAB_STEPS.length; i++) {
-    if (SLAB_STEPS[i] >= native) return i;
+function pickDefaultSlab() {
+  // Default to the source acquisition's thickness/spacing in every
+  // orientation — a sagittal reformat of a 3/2 mm axial CT should start at
+  // 3/2 too. In reformat orientations the per-orientation floor is lower
+  // (cornerstone voxel ≈ in-plane mm), so the user can reduce below source
+  // with [ and ⇧[ to exploit the in-plane resolution.
+  slabThickness = Math.max(thicknessFloor(), sourceThickness ?? thicknessFloor());
+  slabSpacing   = Math.max(spacingFloor(),   sourceSpacing   ?? spacingFloor());
+}
+
+function isAtNative() {
+  // "Native" means we're rendering at the source acquisition values. In the
+  // acquisition orientation that coincides with the floor; elsewhere the
+  // floor is lower and the user can go under native.
+  if (sourceThickness != null && sourceSpacing != null) {
+    return Math.abs(slabThickness - sourceThickness) < 0.01
+        && Math.abs(slabSpacing   - sourceSpacing)   < 0.01;
   }
-  return SLAB_STEPS.length - 1;
+  return slabThickness === thicknessFloor() && slabSpacing === spacingFloor();
 }
 
 // Remember the first seen VOI so we can tell "untouched" from "user
@@ -82,7 +98,7 @@ function emitState() {
   const props = currentViewport.getProperties?.() ?? {};
   const voi = props.voiRange || {};
   const hasVOI = voi.upper != null && voi.lower != null;
-  const slab = currentIsVolume ? effectiveSlab() : null;
+  const atNative = currentIsVolume ? isAtNative() : false;
 
   const center = hasVOI ? (voi.upper + voi.lower) / 2 : null;
   const width  = hasVOI ? voi.upper - voi.lower        : null;
@@ -93,28 +109,16 @@ function emitState() {
     : true;
 
   const isDefaultView = currentIsVolume
-    ? currentOrientation === OrientationAxis.AXIAL
-      && slab?.isNative === true
+    ? currentOrientation === OrientationAxis.AXIAL && atNative
     : true;
-
-  // True when we're rendering the acquired data at its native thickness in
-  // the acquisition orientation — lets the status line show the source
-  // "3/2 mm" or "3+0.5 mm" notation instead of just the slab number.
-  const atSourceNative = !!(
-    slab?.isNative
-    && sourceThickness != null
-    && currentOrientation === sourceOrientation
-  );
 
   document.dispatchEvent(new CustomEvent('viewer:state', {
     detail: {
       isVolume: currentIsVolume,
       orientation: currentOrientation,
-      slabMm: slab?.mm ?? null,
-      slabIsNative: slab?.isNative ?? false,
-      atSourceNative,
-      sourceThickness: atSourceNative ? sourceThickness : null,
-      sourceSpacing: atSourceNative ? sourceSpacing : null,
+      slabThickness: currentIsVolume ? slabThickness : null,
+      slabSpacing:   currentIsVolume ? slabSpacing   : null,
+      isAtNative: atNative,
       isDefaultView,
       center,
       width,
@@ -191,6 +195,10 @@ async function open(folder, container, opts = {}) {
     try { renderingEngine.destroy(); } catch {}
     renderingEngine = null;
   }
+  if (currentVolumeId) {
+    try { cornerstone.cache.removeVolumeLoadObject(currentVolumeId); } catch {}
+    currentVolumeId = null;
+  }
 
   element = container;
   // Clear any canvas/wrapper left behind by a previous engine — if the
@@ -229,8 +237,9 @@ async function open(folder, container, opts = {}) {
         },
       });
 
-      const volumeId = `cornerstoneStreamingImageVolume:${folder}`;
+      const volumeId = `cornerstoneStreamingImageVolume:${folder}:${Date.now()}`;
       await volumeLoader.createAndCacheVolume(volumeId, { imageIds });
+      currentVolumeId = volumeId;
 
       viewport = renderingEngine.getViewport(VIEWPORT_ID);
       await viewport.setVolumes([{ volumeId }]);
@@ -286,7 +295,7 @@ async function open(folder, container, opts = {}) {
     cornerstone.Enums.Events.IMAGE_RENDERED,
     () => {
       if (currentIsVolume) {
-        slabIdx = pickDefaultSlabIdx();
+        pickDefaultSlab();
         applySlab();
       } else {
         emitState();
@@ -295,20 +304,19 @@ async function open(folder, container, opts = {}) {
     { once: true },
   );
 
-  // In volume mode with a thick slab, take over the wheel so each notch
-  // advances by the slab thickness (3 mm slab → 3 mm step). At 1 mm we
-  // let StackScrollTool handle scrolling natively — this preserves the
-  // trackpad's fine-grained deltaY accumulation which our simple
-  // one-step-per-event override loses.
+  // In volume mode, take over the wheel so each notch advances by the
+  // current slab spacing (the denominator). At native cornerstone-grid
+  // spacing we let StackScrollTool handle it — that preserves the
+  // trackpad's fine-grained deltaY accumulation that our one-step-per-event
+  // override loses.
   if (wheelHandler) element.removeEventListener('wheel', wheelHandler, true);
   wheelHandler = (e) => {
     if (!currentIsVolume || !currentViewport) return;
-    const { mm, isNative } = effectiveSlab();
-    if (isNative) return; // native scroll — let StackScrollTool handle it
+    const grid = rawNormalSpacingMm();
+    if (slabSpacing <= grid + 0.01) return; // native scroll
     e.preventDefault();
     e.stopPropagation();
-    const normalSpacing = nativeSpacingMm();
-    const steps = Math.max(1, Math.round(mm / normalSpacing));
+    const steps = Math.max(1, Math.round(slabSpacing / grid));
     const dir = e.deltaY > 0 ? 1 : -1;
     currentViewport.scroll(dir * steps);
   };
@@ -321,10 +329,11 @@ async function open(folder, container, opts = {}) {
   }
 
   // Keyboard shortcuts — only active when the viewer is open.
-  // a/c/s: axial/coronal/sagittal. ]/[ step slab thickness through 1/2/3/5/10 mm.
-  // Slab default starts at index 0; we re-pick it after the first render
-  // (the viewport's getSpacingInNormalDirection isn't reliable until then).
-  slabIdx = 0;
+  // a/c/s: axial/coronal/sagittal.
+  // [/]: thickness ±1 mm. ⇧[/⇧]: spacing ±1 mm. Both clamped to native floor.
+  // Defaults get repicked on first render and on orientation change.
+  slabThickness = 1;
+  slabSpacing = 1;
   if (keyHandler) document.removeEventListener('keydown', keyHandler);
   keyHandler = (e) => {
     if (!currentIsVolume || !currentViewport) return;
@@ -338,20 +347,27 @@ async function open(folder, container, opts = {}) {
       currentOrientation = orientMap[key];
       currentViewport.setOrientation(orientMap[key]);
       currentViewport.render();
-      // Native floor differs per orientation (axial = source slice thickness,
-      // coronal/sagittal = in-plane voxel). Re-pick the default and reapply
-      // so the viewport's slabThickness matches what we report in the status.
-      slabIdx = pickDefaultSlabIdx();
+      pickDefaultSlab();
       applySlab();
       return;
     }
-    if (e.key === ']') {
+    // Shift+]/[ adjusts spacing (denominator); plain ]/[ adjusts thickness.
+    // e.key already reflects the shifted symbol on US layout: '}' / '{'.
+    if (e.key === '}' || (e.shiftKey && e.key === ']')) {
       e.preventDefault();
-      slabIdx = Math.min(slabIdx + 1, SLAB_STEPS.length - 1);
+      slabSpacing = slabSpacing + 1;
+      applySlab();
+    } else if (e.key === '{' || (e.shiftKey && e.key === '[')) {
+      e.preventDefault();
+      slabSpacing = Math.max(spacingFloor(), slabSpacing - 1);
+      applySlab();
+    } else if (e.key === ']') {
+      e.preventDefault();
+      slabThickness = slabThickness + 1;
       applySlab();
     } else if (e.key === '[') {
       e.preventDefault();
-      slabIdx = Math.max(slabIdx - 1, 0);
+      slabThickness = Math.max(thicknessFloor(), slabThickness - 1);
       applySlab();
     } else if (e.key === ' ') {
       e.preventDefault();
@@ -363,17 +379,19 @@ async function open(folder, container, opts = {}) {
 
 function applySlab() {
   if (!currentViewport || !currentIsVolume) return;
-  const { mm, isNative } = effectiveSlab();
-  // If the requested thickness is at or below the native voxel, render as
-  // a composite (single-voxel) slice — averaging below native pretends to
-  // a resolution we don't have. Above native, AVERAGE_INTENSITY_BLEND
-  // gives a meaningful slab projection.
-  if (isNative) {
+  // Clamp to native floor in case orientation changed since the value was set.
+  slabThickness = Math.max(thicknessFloor(), slabThickness);
+  slabSpacing   = Math.max(spacingFloor(),   slabSpacing);
+  // At or below the cornerstone voxel grid, render as a composite (single-
+  // voxel) slice — averaging below native pretends to a resolution we don't
+  // have. Above native, AVERAGE_INTENSITY_BLEND gives a real slab projection.
+  const grid = rawNormalSpacingMm();
+  if (slabThickness <= grid + 0.01) {
     currentViewport.setBlendMode(BlendModes.COMPOSITE);
     currentViewport.setSlabThickness(0);
   } else {
     currentViewport.setBlendMode(BlendModes.AVERAGE_INTENSITY_BLEND);
-    currentViewport.setSlabThickness(mm);
+    currentViewport.setSlabThickness(slabThickness);
   }
   currentViewport.render();
   emitState();
@@ -420,6 +438,10 @@ function close() {
     renderingEngine.destroy();
     renderingEngine = null;
   }
+  if (currentVolumeId) {
+    try { cornerstone.cache.removeVolumeLoadObject(currentVolumeId); } catch {}
+    currentVolumeId = null;
+  }
   element = null;
   currentViewport = null;
   currentIsVolume = false;
@@ -441,7 +463,7 @@ function resetView() {
   // default window AND the starting-point slab (native spacing).
   currentViewport.resetProperties();
   if (currentIsVolume) {
-    slabIdx = pickDefaultSlabIdx();
+    pickDefaultSlab();
     applySlab();
   } else {
     currentViewport.render();
@@ -486,7 +508,7 @@ function goToSlice(idx) {
       const camera = v.getCamera();
       const normal = camera.viewPlaneNormal;
       if (!normal) return;
-      const spacing = nativeSpacingMm();
+      const spacing = rawNormalSpacingMm();
       // Total slices along this orientation — infer from imageIds length,
       // which matches the acquisition count in the common case.
       const imageIds = v.getImageIds?.() ?? [];

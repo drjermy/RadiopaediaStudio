@@ -44,7 +44,7 @@ let anonOutput = null;
 let windowPresets = {};
 let studyMeta = null; // { studies: [{ ..., series: [...] }, ...] }
 let viewerContext = null; // { studyIdx, seriesIdx, folder } for Save
-let viewerState = null;   // latest { isVolume, orientation, slabMm, center, width }
+let viewerState = null;   // latest { isVolume, orientation, slabThickness, slabSpacing, center, width }
 let trimCount = 0;
 
 // Helpers -------------------------------------------------------------------
@@ -252,7 +252,7 @@ async function openViewerForSeries(studyIdx, seriesIdx) {
   viewerTitle.textContent = se.description || `Series ${seriesIdx + 1}`;
   viewerHint.textContent = se.kind === 'derived'
     ? 'scroll page · drag W/L · middle pan · right zoom · space reset'
-    : 'scroll page · drag W/L · middle pan · right zoom · A/C/S orient · [/] slab 1/2/3/5/10 mm · space reset';
+    : 'scroll page · drag W/L · middle pan · right zoom · A/C/S orient · [/] thickness ±1mm · ⇧[/] spacing ±1mm · space reset';
   viewerSection.hidden = false;
   await setupTrim(se);
   viewerSection.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -350,7 +350,7 @@ function closeViewer() {
 async function saveViewerAsVersion() {
   if (!viewerContext || !viewerState) return;
   const { studyIdx, folder } = viewerContext;
-  const { isVolume, orientation, slabMm, center, width } = viewerState;
+  const { isVolume, orientation, slabThickness, slabSpacing, center, width } = viewerState;
 
   const spec = {};
   const suffixParts = [];
@@ -359,15 +359,16 @@ async function saveViewerAsVersion() {
   // would produce a meaningless "same series, new UIDs" reformat — and
   // with slab/spacing wrong during the initial first-render flash, would
   // explode file counts.
-  if (isVolume && orientation && slabMm && !viewerState.isDefaultView) {
-    const mm = Math.round(slabMm * 10) / 10;
+  if (isVolume && orientation && slabThickness && slabSpacing && !viewerState.isDefaultView) {
+    const t = Math.round(slabThickness * 10) / 10;
+    const s = Math.round(slabSpacing * 10) / 10;
     spec.reformat = {
       orientation,
-      thickness: mm,
-      spacing: mm,
+      thickness: t,
+      spacing: s,
       mode: 'avg',
     };
-    suffixParts.push(`${orientation}-${mm}mm`);
+    suffixParts.push(`${orientation}-${t}-${s}mm`);
   }
   if (center != null && width != null && !viewerState.isDefaultVOI) {
     spec.window = { center: Math.round(center), width: Math.round(width) };
@@ -428,31 +429,22 @@ function fmtMm(mm) {
   return (Math.round(mm * 10) / 10).toString().replace(/\.0$/, '');
 }
 
-// Same notation as series labels: "3/2 mm" for abut/overlap, "3+0.5 mm"
-// for gaps. Only used when at native in the acquisition orientation —
-// otherwise we just show the slab number ("5 mm"), since the source
-// spacing concept doesn't carry through a thickened reformat.
-function thicknessLabel({ slabMm, atSourceNative, sourceThickness, sourceSpacing }) {
-  if (atSourceNative && sourceThickness != null) {
-    const th = sourceThickness;
-    const sp = sourceSpacing;
-    if (sp == null) return `${fmtMm(th)} mm (native)`;
-    if (sp > th + 0.01)            return `${fmtMm(th)}+${fmtMm(sp - th)} mm (native)`;
-    if (Math.abs(sp - th) > 0.01)  return `${fmtMm(th)}/${fmtMm(sp)} mm (native)`;
-    return `${fmtMm(th)} mm (native)`;
-  }
-  return `${fmtMm(slabMm)} mm`;
+// Always show thickness/spacing as the slash form ("3/3 mm", "5/2 mm").
+// Append "(native)" when both are at the per-orientation floor.
+function thicknessLabel({ slabThickness, slabSpacing, isAtNative }) {
+  const base = `${fmtMm(slabThickness)}/${fmtMm(slabSpacing)} mm`;
+  return isAtNative ? `${base} (native)` : base;
 }
 
 document.addEventListener('viewer:state', (e) => {
   viewerState = e.detail;
-  const { isVolume, orientation, slabMm, atSourceNative,
-          sourceThickness, sourceSpacing, center, width } = e.detail;
+  const { isVolume, orientation, slabThickness, slabSpacing, isAtNative,
+          center, width } = e.detail;
   const bits = [];
   if (isVolume) {
     if (orientation) bits.push(`<span class="k">View</span><span class="v">${orientation}</span>`);
-    if (slabMm != null) {
-      bits.push(`<span class="k">Thickness</span><span class="v">${thicknessLabel({ slabMm, atSourceNative, sourceThickness, sourceSpacing })}</span>`);
+    if (slabThickness != null && slabSpacing != null) {
+      bits.push(`<span class="k">Thickness</span><span class="v">${thicknessLabel({ slabThickness, slabSpacing, isAtNative })}</span>`);
     }
   } else {
     bits.push('<span class="k">Mode</span><span class="v">stack</span>');
