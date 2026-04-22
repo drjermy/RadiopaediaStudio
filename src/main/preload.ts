@@ -20,3 +20,12 @@ contextBridge.exposeInMainWorld('shellBridge', {
 contextBridge.exposeInMainWorld('dialogBridge', {
   pickFolder: (): Promise<string | null> => ipcRenderer.invoke('dialog:pickFolder'),
 });
+
+contextBridge.exposeInMainWorld('credentials', {
+  getRadiopaediaToken: (): Promise<string | null> =>
+    ipcRenderer.invoke('credentials:get-radiopaedia-token'),
+  setRadiopaediaToken: (t: string): Promise<void> =>
+    ipcRenderer.invoke('credentials:set-radiopaedia-token', t),
+  clearRadiopaediaToken: (): Promise<void> =>
+    ipcRenderer.invoke('credentials:clear-radiopaedia-token'),
+});

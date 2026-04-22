@@ -3,6 +3,11 @@ import { statSync } from 'fs';
 import * as path from 'path';
 import { BackendHandle, startBackend, stopBackend } from './python-manager';
 import { NodeBackendHandle, startNodeSidecar, stopNodeSidecar } from './node-manager';
+import {
+  getRadiopaediaToken,
+  setRadiopaediaToken,
+  clearRadiopaediaToken,
+} from './credentials';
 
 let backend: BackendHandle | null = null;
 let nodeBackend: NodeBackendHandle | null = null;
@@ -65,6 +70,15 @@ app.whenReady().then(async () => {
   });
   ipcMain.handle('shell:reveal', (_evt, p: string) => {
     shell.showItemInFolder(p);
+  });
+  ipcMain.handle('credentials:get-radiopaedia-token', (): string | null => {
+    return getRadiopaediaToken();
+  });
+  ipcMain.handle('credentials:set-radiopaedia-token', (_evt, token: string): void => {
+    setRadiopaediaToken(token);
+  });
+  ipcMain.handle('credentials:clear-radiopaedia-token', (): void => {
+    clearRadiopaediaToken();
   });
   ipcMain.handle('dialog:pickFolder', async (): Promise<string | null> => {
     if (!mainWindow) return null;
