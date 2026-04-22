@@ -105,6 +105,40 @@ function classifyOrientation(iop) {
 
 // We classify from an explicit 6-number IOP array. Use Tag lookup helper
 // instead (see commonTags below).
+// Unit normal to the slice plane from the 6-number IOP (row + col vectors).
+// Used to project ImagePositionPatient onto a 1-D axis for spacing calc.
+function sliceNormal(values) {
+  if (!values || values.length !== 6) return null;
+  const r = values.slice(0, 3).map(Number);
+  const c = values.slice(3).map(Number);
+  if (r.some((x) => !Number.isFinite(x)) || c.some((x) => !Number.isFinite(x))) return null;
+  const n = [
+    r[1] * c[2] - r[2] * c[1],
+    r[2] * c[0] - r[0] * c[2],
+    r[0] * c[1] - r[1] * c[0],
+  ];
+  const mag = Math.hypot(n[0], n[1], n[2]);
+  if (mag === 0) return null;
+  return [n[0] / mag, n[1] / mag, n[2] / mag];
+}
+
+// Median absolute gap between adjacent positions along the slice normal.
+// Returns null when fewer than 2 positions or all coincident.
+function medianSpacing(positions) {
+  if (!positions || positions.length < 2) return null;
+  const sorted = [...positions].sort((a, b) => a - b);
+  const gaps = [];
+  for (let i = 1; i < sorted.length; i++) {
+    const g = Math.abs(sorted[i] - sorted[i - 1]);
+    if (g > 1e-4) gaps.push(g);
+  }
+  if (gaps.length === 0) return null;
+  gaps.sort((a, b) => a - b);
+  const m = gaps.length >> 1;
+  const med = gaps.length % 2 ? gaps[m] : (gaps[m - 1] + gaps[m]) / 2;
+  return Math.round(med * 100) / 100;
+}
+
 function classifyOrientationArr(values) {
   if (!values || values.length !== 6) return null;
   const r = values.slice(0, 3).map(Number);
@@ -259,6 +293,8 @@ async function *iterAnonymise(inputPath, outputPath) {
             slice_count: 0,
             total_bytes: 0,
             transfer_syntax: classifyTransferSyntax(tsuid),
+            _normal: sliceNormal(iopValues),
+            _positions: [],
           });
         }
         if (origSeries) {
@@ -267,6 +303,15 @@ async function *iterAnonymise(inputPath, outputPath) {
           s.total_bytes += fileSize;
           if (!seriesPaths.has(origSeries)) seriesPaths.set(origSeries, []);
           seriesPaths.get(origSeries).push(dst);
+          if (s._normal) {
+            const ipp = getTagValues(originalDict, 'ImagePositionPatient');
+            if (ipp && ipp.length === 3) {
+              const p = ipp.map(Number);
+              if (p.every(Number.isFinite)) {
+                s._positions.push(p[0] * s._normal[0] + p[1] * s._normal[1] + p[2] * s._normal[2]);
+              }
+            }
+          }
         }
       }
 
@@ -289,7 +334,13 @@ async function *iterAnonymise(inputPath, outputPath) {
     const seriesList = [];
     for (const [origUid, s] of study._series.entries()) {
       const paths = seriesPaths.get(origUid) || [];
-      seriesList.push({ ...s, folder: commonParent(paths) });
+      // Prefer spacing computed from ImagePositionPatient — SpacingBetweenSlices
+      // is often missing for CT and reconstructions can overlap (3mm thick at
+      // 2mm spacing, 600 slices over 300 unique positions).
+      const computed = medianSpacing(s._positions);
+      const { _positions, _normal, ...rest } = s;
+      const spacing = computed != null ? computed : s.slice_spacing;
+      seriesList.push({ ...rest, slice_spacing: spacing, folder: commonParent(paths) });
     }
     const { _series, ...rest } = study;
     outStudies.push({ ...rest, series_count: seriesList.length, series: seriesList });

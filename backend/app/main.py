@@ -203,13 +203,44 @@ def series_info(req: SeriesInfoRequest) -> dict:
         except (ValueError, TypeError):
             return None
 
+    # Spacing from ImagePositionPatient projection along the slice normal —
+    # SpacingBetweenSlices is often missing for CT and unreliable when
+    # reconstructions overlap. Read just first + last to derive average gap.
+    spacing = _safe('SpacingBetweenSlices')
+    if len(files) >= 2:
+        try:
+            last = pydicom.dcmread(files[-1])
+            iop = _tag(first, 'ImageOrientationPatient')
+            ipp_a = _tag(first, 'ImagePositionPatient')
+            ipp_b = _tag(last, 'ImagePositionPatient')
+            if iop and ipp_a and ipp_b and len(iop) == 6:
+                r = [float(x) for x in iop[:3]]
+                c = [float(x) for x in iop[3:]]
+                n = (
+                    r[1]*c[2] - r[2]*c[1],
+                    r[2]*c[0] - r[0]*c[2],
+                    r[0]*c[1] - r[1]*c[0],
+                )
+                mag = (n[0]**2 + n[1]**2 + n[2]**2) ** 0.5
+                if mag > 0:
+                    n = (n[0]/mag, n[1]/mag, n[2]/mag)
+                    pa = [float(x) for x in ipp_a]
+                    pb = [float(x) for x in ipp_b]
+                    da = pa[0]*n[0] + pa[1]*n[1] + pa[2]*n[2]
+                    db = pb[0]*n[0] + pb[1]*n[1] + pb[2]*n[2]
+                    gap = abs(db - da) / (len(files) - 1)
+                    if gap > 1e-4:
+                        spacing = round(gap * 100) / 100
+        except Exception:
+            pass
+
     return {
         'folder': str(folder),
         'description': desc,
         'modality': str(first.Modality) if _tag(first, 'Modality') else None,
         'orientation': classify_orientation(_tag(first, 'ImageOrientationPatient')),
         'slice_thickness': _safe('SliceThickness'),
-        'slice_spacing': _safe('SpacingBetweenSlices'),
+        'slice_spacing': spacing,
         'slice_count': len(files),
         'total_bytes': total_bytes,
         'transfer_syntax': ts_info,

@@ -535,13 +535,14 @@ function renderStudySummary() {
         if (se.modality) tech.push(se.modality);
         if (se.orientation) tech.push(se.orientation);
         if (se.slice_thickness != null) {
-          // Show "3mm/2mm" when thickness and spacing differ (overlapping
-          // CT acquisitions are common); "3mm" when they agree or spacing
-          // is unknown. Spacing is what drives reformat math.
+          // "3/2 mm" when slices abut or overlap (spacing ≤ thickness),
+          // "3+0.5 mm" when there's a gap (spacing > thickness, common in MRI).
+          // Slash means thickness/spacing; plus means thickness + gap.
           const th = se.slice_thickness;
           const sp = se.slice_spacing;
-          if (sp != null && Math.abs(sp - th) > 0.01) tech.push(`${th}/${sp}mm`);
-          else tech.push(`${th}mm`);
+          if (sp == null) tech.push(`${fmtMm(th)} mm`);
+          else if (sp > th + 0.01) tech.push(`${fmtMm(th)}+${fmtMm(sp - th)} mm`);
+          else tech.push(`${fmtMm(th)}/${fmtMm(sp)} mm`);
         }
         tech.push(`${se.slice_count} slice${se.slice_count === 1 ? '' : 's'}`);
         const meta = document.createElement('div');
