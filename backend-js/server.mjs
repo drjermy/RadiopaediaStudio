@@ -12,23 +12,34 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
 import { Message, Anonymize } from 'dicomanon';
 
+// Top-level side effects (arg parsing, server start) only run when this
+// module is executed directly. Importing it for tests should be free.
+const IS_MAIN = process.argv[1]
+  ? fileURLToPath(import.meta.url) === path.resolve(process.argv[1])
+  : false;
+
 // ---------------------------------------------------------------- args
 
-const { values } = parseArgs({
-  options: {
-    port: { type: 'string' },
-    host: { type: 'string', default: '127.0.0.1' },
-  },
-});
-const PORT = parseInt(values.port ?? process.env.PORT ?? '0', 10);
-const HOST = values.host;
-if (!PORT) {
-  console.error('--port is required');
-  process.exit(2);
+let PORT = 0;
+let HOST = '127.0.0.1';
+if (IS_MAIN) {
+  const { values } = parseArgs({
+    options: {
+      port: { type: 'string' },
+      host: { type: 'string', default: '127.0.0.1' },
+    },
+  });
+  PORT = parseInt(values.port ?? process.env.PORT ?? '0', 10);
+  HOST = values.host;
+  if (!PORT) {
+    console.error('--port is required');
+    process.exit(2);
+  }
 }
 
 // ---------------------------------------------------------------- helpers
@@ -228,7 +239,7 @@ function commonParent(paths) {
 
 // ---------------------------------------------------------------- anonymise
 
-function anonymiseBuffer(inputBuffer) {
+export function anonymiseBuffer(inputBuffer) {
   // dicomanon wants an ArrayBuffer; Node Buffers are views onto one.
   const ab = inputBuffer.buffer.slice(
     inputBuffer.byteOffset,
@@ -400,6 +411,8 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, HOST, () => {
-  console.log(`[node] listening on http://${HOST}:${PORT}`);
-});
+if (IS_MAIN) {
+  server.listen(PORT, HOST, () => {
+    console.log(`[node] listening on http://${HOST}:${PORT}`);
+  });
+}

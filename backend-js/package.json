@@ -5,6 +5,9 @@
   "type": "module",
   "main": "server.mjs",
   "private": true,
+  "scripts": {
+    "test": "node --test test/"
+  },
   "dependencies": {
     "dicomanon": "github:radiopaedia/dicom-anonymiser#semver:^0.4.3"
   }
