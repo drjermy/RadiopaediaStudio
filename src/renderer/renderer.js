@@ -1,5 +1,6 @@
 // Elements ------------------------------------------------------------------
-const drop = document.getElementById('drop');
+const dropAnonymise = document.getElementById('drop-anonymise');
+const dropLoad = document.getElementById('drop-load');
 const panelInspected = document.getElementById('panel-inspected');
 const panelProcessing = document.getElementById('panel-processing');
 const panelDone = document.getElementById('panel-done');
@@ -68,7 +69,8 @@ function humanBytes(n) {
 
 function setState(next) {
   state = next;
-  drop.style.display = next === 'idle' ? '' : 'none';
+  const dz = document.getElementById('drop-zones');
+  if (dz) dz.style.display = next === 'idle' ? '' : 'none';
   panelInspected.classList.toggle('active', next === 'inspected');
   panelProcessing.classList.toggle('active', next === 'processing');
   panelDone.classList.toggle('active', next === 'done');
@@ -248,18 +250,15 @@ async function openViewerForSeries(studyIdx, seriesIdx) {
     write('viewer bundle not loaded');
     return;
   }
-  viewerContext = { studyIdx, seriesIdx, folder: se.folder, isDerived: se.kind === 'derived' };
+  viewerContext = { studyIdx, seriesIdx, folder: se.folder };
   viewerState = null;
   viewerTitle.textContent = se.description || `Series ${seriesIdx + 1}`;
-  viewerHint.textContent = se.kind === 'derived'
-    ? 'scroll page · drag W/L · middle pan · right zoom · space reset'
-    : 'scroll page · drag W/L · middle pan · right zoom · A/C/S orient · [/] thickness ±1mm · ⇧[/] spacing ±1mm · space reset';
+  viewerHint.textContent = 'scroll page · drag W/L · middle pan · right zoom · A/C/S orient · [/] thickness ±1mm · ⇧[/] spacing ±1mm · space reset';
   viewerSection.hidden = false;
   await setupTrim(se);
   viewerSection.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   try {
     await window.viewerAPI.open(se.folder, viewerCanvas, {
-      forceStack: se.kind === 'derived',
       sliceThickness: se.slice_thickness,
       sliceSpacing: se.slice_spacing,
       orientation: se.orientation,
@@ -568,9 +567,8 @@ function renderStudySummary() {
         const li = document.createElement('li');
         li.dataset.studyIdx = String(si);
         li.dataset.seriesIdx = String(i);
-        if (se.kind === 'derived') li.classList.add('derived');
-        // Thumbnails are clickable again — now they open the viewer (not
-        // the Create panel). The "+" card is still the only way to create.
+        // Thumbnails are clickable — they open the viewer. The "+" card
+        // is still the only way to create a new derived series.
         if (se.folder) {
           li.classList.add('viewable');
           li.addEventListener('click', () => openViewerForSeries(si, i));
@@ -588,11 +586,18 @@ function renderStudySummary() {
           li.appendChild(ph);
         }
 
-        if (se.kind === 'derived') {
-          const tag = document.createElement('span');
-          tag.className = 'derived-tag';
-          tag.textContent = 'DERIVED';
-          li.appendChild(tag);
+        if (se.folder) {
+          const del = document.createElement('button');
+          del.className = 'series-delete';
+          del.type = 'button';
+          del.title = 'Delete this series from disk';
+          del.setAttribute('aria-label', 'Delete series');
+          del.textContent = '×';
+          del.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            void deleteSeries(si, i);
+          });
+          li.appendChild(del);
         }
 
         const desc = document.createElement('div');
@@ -702,10 +707,56 @@ async function runAnonymise() {
       : `Anonymised — ${result.count} file${result.count === 1 ? '' : 's'} written`;
     renderDropDetails(result.aggregateDrops, result.count, pending.kind);
     setState('done');
+    // Remember the anonymised output so Cmd+R reloads it without re-running.
+    persistLastFolder(result.output);
   } catch (e) {
     write(`error: ${e.message || e}`);
     setState('inspected');
   }
+}
+
+// Load (read-only) ----------------------------------------------------------
+async function loadFolder(folderPath) {
+  const port = await window.backend.getPort();
+  if (!port) { write('backend not ready'); return; }
+  processingSummary.textContent = `Scanning ${folderPath}…`;
+  setState('processing');
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/scan`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input: folderPath }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const summary = await res.json();
+    studyMeta = summary;
+    anonOutput = folderPath;
+    renderStudySummary();
+    const nSeries = summary.studies?.reduce((a, s) => a + (s.series?.length ?? 0), 0) ?? 0;
+    doneTitle.textContent = `Loaded ${nSeries} series from ${folderPath}`;
+    // No drop-details for load — nothing was dropped/scrubbed.
+    dropDetails.hidden = true;
+    setState('done');
+    persistLastFolder(folderPath);
+  } catch (e) {
+    write(`load failed: ${e.message || e}`);
+    setState('idle');
+  }
+}
+
+const LAST_FOLDER_KEY = 'pacs-anonymizer:last-folder';
+
+function persistLastFolder(folder) {
+  try { localStorage.setItem(LAST_FOLDER_KEY, folder); } catch {}
+}
+
+async function restoreLastFolder() {
+  let saved = null;
+  try { saved = localStorage.getItem(LAST_FOLDER_KEY); } catch {}
+  if (!saved) return;
+  // Soft-reload: if the folder vanished between sessions, loadFolder's
+  // /scan call will fail cleanly and we fall back to idle.
+  await loadFolder(saved);
 }
 
 async function appendNewSeries(folder, label, studyIdx) {
@@ -732,7 +783,6 @@ async function appendNewSeries(folder, label, studyIdx) {
       transfer_syntax: info.transfer_syntax,
       folder: info.folder,
       thumbnail: info.thumbnail,
-      kind: 'derived',
       operation: label,
     });
     if (info.total_bytes) st.total_bytes = (st.total_bytes || 0) + info.total_bytes;
@@ -741,6 +791,36 @@ async function appendNewSeries(folder, label, studyIdx) {
     renderStudySummary();
   } catch (e) {
     console.warn('[renderer] series-info fetch failed:', e);
+  }
+}
+
+async function deleteSeries(studyIdx, seriesIdx) {
+  const st = studyMeta?.studies?.[studyIdx];
+  const se = st?.series?.[seriesIdx];
+  if (!se?.folder) return;
+  const label = se.description || `Series ${seriesIdx + 1}`;
+  if (!confirm(`Delete "${label}" and its ${se.slice_count ?? '?'} files from disk?\n\n${se.folder}`)) return;
+  // Close viewer first if it's showing the series we're about to delete —
+  // otherwise Cornerstone holds file handles and the folder can't be removed.
+  if (viewerContext?.folder === se.folder) closeViewer();
+  const port = await window.backend.getPort();
+  if (!port) { write('backend not ready'); return; }
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/delete-series`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ folder: se.folder }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    // Mutate the study summary and re-render.
+    st.series.splice(seriesIdx, 1);
+    st.series_count = st.series.length;
+    if (se.total_bytes) st.total_bytes = Math.max(0, (st.total_bytes || 0) - se.total_bytes);
+    if (se.slice_count) st.total_slices = Math.max(0, (st.total_slices || 0) - se.slice_count);
+    renderStudySummary();
+    write(`deleted ${label}`);
+  } catch (e) {
+    write(`delete failed: ${e.message || e}`);
   }
 }
 
@@ -777,27 +857,31 @@ viewerPresetSelect.addEventListener('change', () => {
 });
 
 // Drop handling -------------------------------------------------------------
-['dragenter', 'dragover'].forEach((evt) =>
-  drop.addEventListener(evt, (e) => {
-    e.preventDefault();
-    drop.classList.add('hover');
-  })
-);
-['dragleave', 'drop'].forEach((evt) =>
-  drop.addEventListener(evt, (e) => {
-    e.preventDefault();
-    drop.classList.remove('hover');
-  })
-);
+function bindDropZone(zone, onDrop) {
+  ['dragenter', 'dragover'].forEach((evt) =>
+    zone.addEventListener(evt, (e) => {
+      e.preventDefault();
+      zone.classList.add('hover');
+    })
+  );
+  ['dragleave', 'drop'].forEach((evt) =>
+    zone.addEventListener(evt, (e) => {
+      e.preventDefault();
+      zone.classList.remove('hover');
+    })
+  );
+  zone.addEventListener('drop', (e) => {
+    if (state !== 'idle') return;
+    const files = Array.from(e.dataTransfer?.files || []);
+    if (files.length === 0) return;
+    const p = window.fsBridge.pathForFile(files[0]);
+    if (!p) { write('dropped item has no path'); return; }
+    onDrop(p);
+  });
+}
 
-drop.addEventListener('drop', (e) => {
-  if (state !== 'idle') return;
-  const files = Array.from(e.dataTransfer?.files || []);
-  if (files.length === 0) return;
-  const p = window.fsBridge.pathForFile(files[0]);
-  if (!p) { write('dropped item has no path'); return; }
-  inspect(p);
-});
+bindDropZone(dropAnonymise, (p) => inspect(p));
+bindDropZone(dropLoad, (p) => loadFolder(p));
 
 // Buttons -------------------------------------------------------------------
 btnAnonymise.addEventListener('click', runAnonymise);
@@ -812,6 +896,7 @@ btnReset.addEventListener('click', () => {
   dropDetailsBody.innerHTML = '';
   renderStudySummary();
   log.textContent = '';
+  try { localStorage.removeItem(LAST_FOLDER_KEY); } catch {}
   setState('idle');
 });
 
@@ -821,3 +906,4 @@ btnRevealMain.addEventListener('click', () => {
 
 setState('idle');
 loadPresets();
+void restoreLastFolder();

@@ -152,7 +152,10 @@ def is_dicom_file(path: Path) -> bool:
 
 
 def find_dicoms(input_dir: Path) -> list[Path]:
-    return [p for p in input_dir.rglob('*') if is_dicom_file(p)]
+    # Sort so callers get stable order — with rglob's filesystem ordering
+    # the base series and its derived variants (folder name + suffix) can
+    # land in any sequence, and the renderer just shows them in order.
+    return sorted(p for p in input_dir.rglob('*') if is_dicom_file(p))
 
 
 def classify_orientation(iop) -> str | None:
@@ -299,6 +302,187 @@ def iter_scrub_folder(input_dir: Path, output_dir: Path, *, summary_out: dict | 
             study['series'] = out_series
             out_studies.append(study)
         summary_out['studies'] = out_studies
+
+
+def scan_folder(input_dir: Path) -> dict:
+    """Read-only pass: group DICOMs by study/series, compute per-series
+    metadata (orientation, thickness, computed spacing, transfer syntax,
+    total bytes), render a middle-slice thumbnail. Returns the same
+    summary shape the anonymiser produces, so the renderer reuses the
+    study-summary view for both the 'Load' and 'Anonymise' flows."""
+    from app.thumbnails import make_thumbnail
+
+    studies: dict[str, dict] = {}
+    series_paths: dict[str, list[Path]] = {}
+    series_ipp: dict[str, list[tuple[float, float, float]]] = {}
+    series_normal: dict[str, tuple[float, float, float] | None] = {}
+
+    for src in find_dicoms(input_dir):
+        try:
+            ds = pydicom.dcmread(src, stop_before_pixels=True)
+        except Exception:
+            continue
+        orig_study = ds.get('StudyInstanceUID', None)
+        orig_series = ds.get('SeriesInstanceUID', None)
+        if not orig_study or not orig_series:
+            continue
+
+        if orig_study not in studies:
+            studies[orig_study] = {
+                'description': (
+                    str(ds.StudyDescription).strip()
+                    if ds.get('StudyDescription', None) else None
+                ),
+                'modality': str(ds.Modality) if ds.get('Modality', None) else None,
+                'body_part': (
+                    str(ds.BodyPartExamined) if ds.get('BodyPartExamined', None) else None
+                ),
+                'study_date': str(ds.StudyDate) if ds.get('StudyDate', None) else None,
+                'total_slices': 0,
+                'total_bytes': 0,
+                '_series': {},
+            }
+        studies[orig_study]['total_slices'] += 1
+        file_size = src.stat().st_size
+        studies[orig_study]['total_bytes'] += file_size
+
+        series_map = studies[orig_study]['_series']
+        if orig_series not in series_map:
+            iop = ds.get('ImageOrientationPatient', None)
+            series_map[orig_series] = {
+                'description': (
+                    str(ds.SeriesDescription).strip()
+                    if ds.get('SeriesDescription', None) else None
+                ),
+                'modality': str(ds.Modality) if ds.get('Modality', None) else None,
+                'orientation': classify_orientation(iop),
+                'slice_thickness': _safe_float(ds.get('SliceThickness', None)),
+                'slice_spacing': _safe_float(ds.get('SpacingBetweenSlices', None)),
+                'slice_count': 0,
+                'total_bytes': 0,
+                'transfer_syntax': _ts_info(ds),
+            }
+            # Unit normal to the slice plane, reused for all slices in this series.
+            series_normal[orig_series] = _slice_normal(iop)
+            series_ipp[orig_series] = []
+
+        series_map[orig_series]['slice_count'] += 1
+        series_map[orig_series]['total_bytes'] += file_size
+        series_paths.setdefault(orig_series, []).append(src)
+
+        ipp = ds.get('ImagePositionPatient', None)
+        normal = series_normal[orig_series]
+        if ipp and normal and len(ipp) == 3:
+            try:
+                p = [float(x) for x in ipp]
+                series_ipp[orig_series].append(
+                    p[0] * normal[0] + p[1] * normal[1] + p[2] * normal[2]
+                )
+            except (ValueError, TypeError):
+                pass
+
+    out_studies = []
+    for study_uid, study in studies.items():
+        series_map = study.pop('_series')
+        out_series = []
+        for series_uid, stats in series_map.items():
+            paths = series_paths.get(series_uid, [])
+            stats['folder'] = str(_common_parent(paths)) if paths else None
+            # Prefer spacing derived from IPP over the (often-missing)
+            # SpacingBetweenSlices tag, same logic the anonymiser uses.
+            computed = _median_spacing(series_ipp.get(series_uid, []))
+            if computed is not None:
+                stats['slice_spacing'] = computed
+            if paths:
+                try:
+                    middle = sorted(paths)[len(paths) // 2]
+                    stats['thumbnail'] = make_thumbnail(pydicom.dcmread(middle))
+                except Exception:
+                    stats['thumbnail'] = None
+            out_series.append(stats)
+        study['series_count'] = len(out_series)
+        study['series'] = out_series
+        out_studies.append(study)
+    return {'studies': out_studies}
+
+
+def _slice_normal(iop):
+    if not iop or len(iop) != 6:
+        return None
+    try:
+        r = [float(x) for x in iop[:3]]
+        c = [float(x) for x in iop[3:]]
+    except (ValueError, TypeError):
+        return None
+    n = (
+        r[1]*c[2] - r[2]*c[1],
+        r[2]*c[0] - r[0]*c[2],
+        r[0]*c[1] - r[1]*c[0],
+    )
+    mag = (n[0]**2 + n[1]**2 + n[2]**2) ** 0.5
+    if mag == 0:
+        return None
+    return (n[0]/mag, n[1]/mag, n[2]/mag)
+
+
+def _median_spacing(positions):
+    if not positions or len(positions) < 2:
+        return None
+    sorted_pos = sorted(positions)
+    gaps = []
+    for i in range(1, len(sorted_pos)):
+        g = abs(sorted_pos[i] - sorted_pos[i-1])
+        if g > 1e-4:
+            gaps.append(g)
+    if not gaps:
+        return None
+    gaps.sort()
+    mid = len(gaps) // 2
+    med = gaps[mid] if len(gaps) % 2 else (gaps[mid-1] + gaps[mid]) / 2
+    return round(med * 100) / 100
+
+
+def _ts_info(ds) -> dict:
+    """Transfer-syntax classification matching the JS/Python anonymiser paths."""
+    uid = None
+    try:
+        uid = str(ds.file_meta.TransferSyntaxUID) if getattr(ds, 'file_meta', None) else None
+    except Exception:
+        pass
+    names = {
+        '1.2.840.10008.1.2':       'uncompressed (implicit LE)',
+        '1.2.840.10008.1.2.1':     'uncompressed',
+        '1.2.840.10008.1.2.2':     'uncompressed (explicit BE)',
+        '1.2.840.10008.1.2.4.50':  'JPEG baseline',
+        '1.2.840.10008.1.2.4.51':  'JPEG extended',
+        '1.2.840.10008.1.2.4.57':  'JPEG lossless',
+        '1.2.840.10008.1.2.4.70':  'JPEG lossless SV1',
+        '1.2.840.10008.1.2.4.80':  'JPEG-LS lossless',
+        '1.2.840.10008.1.2.4.81':  'JPEG-LS lossy',
+        '1.2.840.10008.1.2.4.90':  'JPEG 2000 lossless',
+        '1.2.840.10008.1.2.4.91':  'JPEG 2000 lossy',
+        '1.2.840.10008.1.2.4.92':  'JPEG 2000 pt2 lossless',
+        '1.2.840.10008.1.2.4.93':  'JPEG 2000 pt2 lossy',
+        '1.2.840.10008.1.2.4.201': 'HTJ2K lossless',
+        '1.2.840.10008.1.2.4.202': 'HTJ2K lossless-only',
+        '1.2.840.10008.1.2.4.203': 'HTJ2K lossy',
+        '1.2.840.10008.1.2.5':     'RLE lossless',
+    }
+    uncompressed = {'1.2.840.10008.1.2', '1.2.840.10008.1.2.1', '1.2.840.10008.1.2.2'}
+    lossless_compressed = {
+        '1.2.840.10008.1.2.4.57', '1.2.840.10008.1.2.4.70',
+        '1.2.840.10008.1.2.4.80', '1.2.840.10008.1.2.4.90',
+        '1.2.840.10008.1.2.4.92', '1.2.840.10008.1.2.4.201',
+        '1.2.840.10008.1.2.4.202', '1.2.840.10008.1.2.5',
+    }
+    if not uid:
+        return {'uid': None, 'name': 'unknown', 'compressed': False, 'lossy': False}
+    name = names.get(uid, uid)
+    if uid in uncompressed:
+        return {'uid': uid, 'name': name, 'compressed': False, 'lossy': False}
+    if uid in lossless_compressed:
+        return {'uid': uid, 'name': name, 'compressed': True, 'lossy': False}
+    return {'uid': uid, 'name': name, 'compressed': True, 'lossy': True}
 
 
 def _common_parent(paths: list[Path]) -> Path:

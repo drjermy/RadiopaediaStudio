@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 from pathlib import Path
 
 import uvicorn
@@ -16,7 +17,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
-from app.anonymizer import find_dicoms, is_dicom_file, iter_scrub_folder, scrub_file
+from app.anonymizer import find_dicoms, is_dicom_file, iter_scrub_folder, scrub_file, scan_folder
 from app.compress import iter_compress_folder, iter_recompress_in_place
 from app.reformat import MODES as REFORMAT_MODES, ORIENTATIONS, iter_reformat_series
 from app.windowing import (
@@ -85,6 +86,10 @@ class TransformRequest(BaseModel):
     reformat: ReformatSpec | None = None
     window: WindowSpec | None = None
     compress: CompressSpec | None = None
+
+
+class DeleteSeriesRequest(BaseModel):
+    folder: str
 
 
 @app.post('/inspect')
@@ -565,6 +570,32 @@ def transform(req: TransformRequest) -> StreamingResponse:
 
         yield _line({'type': 'done', 'count': count, 'error_count': error_count, 'output': str(out_path)})
     return StreamingResponse(gen_folder(), media_type='application/x-ndjson')
+
+
+@app.post('/scan')
+def scan(req: InspectRequest) -> dict:
+    """Read-only study/series summary for a folder — same shape the
+    anonymiser emits, used by the 'Load' flow and the on-startup reload
+    of the last-viewed folder."""
+    folder = Path(req.input)
+    if not folder.is_dir():
+        raise HTTPException(status_code=400, detail=f'not a directory: {folder}')
+    return scan_folder(folder)
+
+
+@app.post('/delete-series')
+def delete_series(req: DeleteSeriesRequest) -> dict:
+    """Remove a series folder from disk. Used by the Delete button on the
+    thumbnail to drop anonymised or derived series. Only directories
+    containing DICOM files are accepted — refuses to recurse into
+    arbitrary paths so a malformed request can't wipe the user's home."""
+    folder = Path(req.folder).resolve()
+    if not folder.is_dir():
+        raise HTTPException(status_code=400, detail=f'not a directory: {folder}')
+    if not find_dicoms(folder):
+        raise HTTPException(status_code=400, detail=f'no DICOMs under {folder}; refusing to delete')
+    shutil.rmtree(folder)
+    return {'deleted': str(folder)}
 
 
 def main() -> None:
