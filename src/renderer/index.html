@@ -588,6 +588,107 @@
     /* Layout helper: drop + panels in same visual slot */
     #main-area { flex: 1; display: flex; flex-direction: column; }
     #main-area > * { flex: 1; }
+
+    /* Case details — sits below the study summary inside the Done panel.
+       Uses <details> so the user can collapse it but stay on the same
+       page as the thumbnails (delete + trim affordances stay reachable). */
+    .case-details {
+      border: 1px solid rgba(127, 127, 127, 0.25);
+      border-radius: 8px;
+      padding: 8px 12px;
+      margin-top: 8px;
+    }
+    .case-details > summary {
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 14px;
+      color: #333;
+      padding: 4px 0;
+      user-select: none;
+    }
+    .case-details[open] > summary {
+      border-bottom: 1px solid rgba(127, 127, 127, 0.15);
+      margin-bottom: 10px;
+    }
+    .case-form {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      padding: 4px 0;
+    }
+    .case-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    .case-field {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      font-size: 12px;
+      flex: 1 1 140px;
+    }
+    .case-field-wide { flex: 1 1 100%; }
+    .case-label {
+      color: #555;
+      font-weight: 500;
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 8px;
+    }
+    .case-required { color: #d14; margin-left: 2px; }
+    .case-counter {
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-size: 10px;
+      color: #999;
+      font-weight: 400;
+    }
+    .case-counter.over { color: #d14; }
+    .case-field input[type="text"],
+    .case-field select,
+    .case-field textarea {
+      font: inherit;
+      font-size: 13px;
+      padding: 5px 8px;
+      border-radius: 5px;
+      border: 1px solid rgba(127, 127, 127, 0.4);
+      background: transparent;
+      color: inherit;
+      box-sizing: border-box;
+      width: 100%;
+    }
+    .case-field textarea {
+      resize: vertical;
+      min-height: 56px;
+      font-family: inherit;
+    }
+    .case-field input:focus,
+    .case-field select:focus,
+    .case-field textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+    .case-field input.invalid,
+    .case-field textarea.invalid {
+      border-color: #d14;
+    }
+    .case-hint {
+      font-size: 11px;
+      color: #888;
+    }
+    .case-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 10px;
+      margin-top: 4px;
+    }
+    .case-validation {
+      font-size: 11px;
+      color: #888;
+    }
+    .case-validation.error { color: #d14; }
   </style>
 </head>
 <body>
@@ -675,6 +776,96 @@
         </div>
       </div>
 
+      <details id="case-details" class="case-details" open hidden>
+        <summary>Case details</summary>
+        <form id="case-form" class="case-form" novalidate>
+          <div class="case-row">
+            <label class="case-field case-field-wide">
+              <span class="case-label">
+                Title <span class="case-required">*</span>
+                <span class="case-counter" id="case-title-counter"></span>
+              </span>
+              <input type="text" id="case-title" maxlength="120" required
+                placeholder="e.g. Acute appendicitis on CT" />
+            </label>
+          </div>
+
+          <div class="case-row">
+            <label class="case-field">
+              <span class="case-label">Modality</span>
+              <select id="case-modality">
+                <option value="">(unspecified)</option>
+              </select>
+            </label>
+            <label class="case-field">
+              <span class="case-label">Body part</span>
+              <select id="case-body-part">
+                <option value="">(unspecified)</option>
+              </select>
+            </label>
+            <label class="case-field">
+              <span class="case-label">Age band</span>
+              <select id="case-age-band">
+                <option value="">(unspecified)</option>
+              </select>
+            </label>
+            <label class="case-field">
+              <span class="case-label">Sex</span>
+              <select id="case-sex">
+                <option value="">(unspecified)</option>
+                <option value="M">M</option>
+                <option value="F">F</option>
+                <option value="O">Other</option>
+              </select>
+            </label>
+            <label class="case-field">
+              <span class="case-label">Visibility</span>
+              <select id="case-visibility">
+                <option value="draft">Draft</option>
+                <option value="public">Public</option>
+              </select>
+            </label>
+          </div>
+
+          <label class="case-field case-field-wide">
+            <span class="case-label">
+              Clinical history
+              <span class="case-counter" id="case-history-counter"></span>
+            </span>
+            <textarea id="case-clinical-history" rows="3"
+              placeholder="Presenting complaint, relevant history, context."></textarea>
+          </label>
+
+          <label class="case-field case-field-wide">
+            <span class="case-label">
+              Findings
+              <span class="case-counter" id="case-findings-counter"></span>
+            </span>
+            <textarea id="case-findings" rows="4"
+              placeholder="Imaging findings you want in the case report."></textarea>
+          </label>
+
+          <label class="case-field case-field-wide">
+            <span class="case-label">Case discussion</span>
+            <textarea id="case-discussion" rows="4"
+              placeholder="Discussion, teaching points, differential."></textarea>
+          </label>
+
+          <label class="case-field case-field-wide">
+            <span class="case-label">Tags</span>
+            <input type="text" id="case-tags"
+              placeholder="comma-separated, e.g. appendicitis, CT, abdomen" />
+            <span class="case-hint" id="case-tags-hint"></span>
+          </label>
+
+          <div class="case-actions">
+            <span class="case-validation" id="case-validation"></span>
+            <button type="button" class="primary" id="btn-case-ready" disabled>
+              Ready to upload
+            </button>
+          </div>
+        </form>
+      </details>
 
     </div>
   </div>

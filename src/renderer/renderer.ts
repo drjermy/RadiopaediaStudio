@@ -1,4 +1,7 @@
 import type {
+  Case,
+  CaseSex,
+  CaseVisibility,
   CompressSpec,
   DeleteSeriesRequest,
   InspectResponse,
@@ -15,6 +18,16 @@ import type {
   TrimRequest,
   WindowPresetsResponse,
   WindowSpec,
+} from '../shared/api';
+import {
+  CASE_AGE_BANDS,
+  CASE_BODY_PARTS,
+  CASE_CLINICAL_HISTORY_MAX,
+  CASE_FINDINGS_MAX,
+  CASE_MODALITIES,
+  CASE_TITLE_MAX,
+  buildCasePayload,
+  deriveDefaultCase,
 } from '../shared/api';
 import type { ViewerStateDetail } from './globals';
 
@@ -73,9 +86,30 @@ const btnAnonymise = req<HTMLButtonElement>('btn-anonymise');
 const btnCancelInspect = req<HTMLButtonElement>('btn-cancel-inspect');
 const btnReset = req<HTMLButtonElement>('btn-reset');
 
+// Case metadata form elements.
+const caseDetails = req<HTMLDetailsElement>('case-details');
+const caseForm = req<HTMLFormElement>('case-form');
+const caseTitle = req<HTMLInputElement>('case-title');
+const caseTitleCounter = req<HTMLSpanElement>('case-title-counter');
+const caseModality = req<HTMLSelectElement>('case-modality');
+const caseBodyPart = req<HTMLSelectElement>('case-body-part');
+const caseAgeBand = req<HTMLSelectElement>('case-age-band');
+const caseSex = req<HTMLSelectElement>('case-sex');
+const caseVisibility = req<HTMLSelectElement>('case-visibility');
+const caseClinicalHistory = req<HTMLTextAreaElement>('case-clinical-history');
+const caseHistoryCounter = req<HTMLSpanElement>('case-history-counter');
+const caseFindings = req<HTMLTextAreaElement>('case-findings');
+const caseFindingsCounter = req<HTMLSpanElement>('case-findings-counter');
+const caseDiscussion = req<HTMLTextAreaElement>('case-discussion');
+const caseTags = req<HTMLInputElement>('case-tags');
+const caseTagsHint = req<HTMLSpanElement>('case-tags-hint');
+const caseValidation = req<HTMLSpanElement>('case-validation');
+const btnCaseReady = req<HTMLButtonElement>('btn-case-ready');
+
 // Suppress unused warnings for elements that exist only so we throw early
 // if the HTML drifts out of sync with this file.
 void inspectedTitle; void inspectedSummary; void inspectedPath;
+void caseForm;
 
 // State ---------------------------------------------------------------------
 type AppState = 'idle' | 'inspected' | 'processing' | 'done';
@@ -919,6 +953,7 @@ async function runAnonymise(): Promise<void> {
       ? `Anonymised — ${count} written, ${errorCount} failed`
       : `Anonymised — ${count} file${count === 1 ? '' : 's'} written`;
     renderDropDetails(result.aggregateDrops, count, pending.kind);
+    hydrateCaseForm(studyMeta, anonOutput);
     setState('done');
     // Remember the anonymised output so Cmd+R reloads it without re-running.
     if (result.output) persistLastFolder(result.output);
@@ -951,6 +986,7 @@ async function loadFolder(folderPath: string): Promise<void> {
     doneTitle.textContent = `Loaded ${nSeries} series from ${basename(folderPath)}`;
     // No drop-details for load — nothing was dropped/scrubbed.
     dropDetails.hidden = true;
+    hydrateCaseForm(studyMeta, anonOutput);
     setState('done');
     persistLastFolder(folderPath);
   } catch (e) {
@@ -1140,12 +1176,248 @@ btnReset.addEventListener('click', () => {
   renderStudySummary();
   log.textContent = '';
   try { sessionStorage.removeItem(LAST_FOLDER_KEY); } catch { /* ignore */ }
+  // Clear the case-draft too: a full reset shouldn't bleed the old case's
+  // title/history into the next study the user drops in.
+  clearCaseDraft();
+  resetCaseForm();
+  caseDetails.hidden = true;
   setState('idle');
 });
 
 btnRevealMain.addEventListener('click', () => {
   if (anonOutput) window.shellBridge.reveal(anonOutput);
 });
+
+// Case metadata form --------------------------------------------------------
+// The form lives inside the Done panel as a <details> block, directly below
+// the study summary (and below the inline viewer when open). The details
+// element opens by default so the user sees the fields as soon as
+// anonymisation finishes — but they can collapse it to get the thumbnails
+// back to full width while flipping through series.
+
+const CASE_DRAFT_KEY = 'radiopaedia-studio:case-draft';
+
+type CaseFormShape = Omit<Case, 'source_summary' | 'output_root'>;
+
+function emptyCaseForm(): CaseFormShape {
+  return {
+    title: '',
+    visibility: 'draft',
+    body_part: null,
+    modality: null,
+    patient_age_band: null,
+    patient_sex: null,
+    clinical_history: '',
+    findings: '',
+    case_discussion: '',
+    tags: [],
+  };
+}
+
+// Populate the fixed-list selects exactly once.
+function populateCaseSelects(): void {
+  for (const m of CASE_MODALITIES) {
+    const opt = document.createElement('option');
+    opt.value = m;
+    opt.textContent = m;
+    caseModality.appendChild(opt);
+  }
+  for (const bp of CASE_BODY_PARTS) {
+    const opt = document.createElement('option');
+    opt.value = bp;
+    opt.textContent = bp;
+    caseBodyPart.appendChild(opt);
+  }
+  for (const ab of CASE_AGE_BANDS) {
+    const opt = document.createElement('option');
+    opt.value = ab;
+    opt.textContent = ab;
+    caseAgeBand.appendChild(opt);
+  }
+}
+
+function parseTags(raw: string): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const part of raw.split(',')) {
+    const t = part.trim();
+    if (!t) continue;
+    const key = t.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(t);
+  }
+  return out;
+}
+
+function readCaseForm(): CaseFormShape {
+  return {
+    title: caseTitle.value.trim(),
+    visibility: (caseVisibility.value || 'draft') as CaseVisibility,
+    body_part: caseBodyPart.value || null,
+    modality: caseModality.value || null,
+    patient_age_band: caseAgeBand.value || null,
+    patient_sex: (caseSex.value || null) as CaseSex | null,
+    clinical_history: caseClinicalHistory.value,
+    findings: caseFindings.value,
+    case_discussion: caseDiscussion.value,
+    tags: parseTags(caseTags.value),
+  };
+}
+
+function writeCaseForm(data: Partial<CaseFormShape>): void {
+  if (data.title !== undefined) caseTitle.value = data.title ?? '';
+  if (data.visibility !== undefined) caseVisibility.value = data.visibility ?? 'draft';
+  if (data.body_part !== undefined) caseBodyPart.value = data.body_part ?? '';
+  if (data.modality !== undefined) caseModality.value = data.modality ?? '';
+  if (data.patient_age_band !== undefined) caseAgeBand.value = data.patient_age_band ?? '';
+  if (data.patient_sex !== undefined) caseSex.value = data.patient_sex ?? '';
+  if (data.clinical_history !== undefined) caseClinicalHistory.value = data.clinical_history ?? '';
+  if (data.findings !== undefined) caseFindings.value = data.findings ?? '';
+  if (data.case_discussion !== undefined) caseDiscussion.value = data.case_discussion ?? '';
+  if (data.tags !== undefined) caseTags.value = (data.tags ?? []).join(', ');
+}
+
+function updateCounter(
+  el: HTMLSpanElement,
+  value: string,
+  max: number,
+  hardCap: boolean,
+): void {
+  const len = value.length;
+  el.textContent = `${len} / ${max}`;
+  const over = len > max;
+  el.classList.toggle('over', over);
+  // Mark the associated field invalid purely visually for soft caps; hard
+  // caps (like title) still disable the submit.
+  void hardCap;
+}
+
+function validateCaseForm(): { ok: boolean; message: string } {
+  const title = caseTitle.value.trim();
+  caseTitle.classList.toggle('invalid', title.length === 0 || title.length > CASE_TITLE_MAX);
+  if (title.length === 0) return { ok: false, message: 'Title is required.' };
+  if (title.length > CASE_TITLE_MAX) {
+    return { ok: false, message: `Title is too long (max ${CASE_TITLE_MAX}).` };
+  }
+  return { ok: true, message: '' };
+}
+
+function refreshCaseFormUI(): void {
+  updateCounter(caseTitleCounter, caseTitle.value, CASE_TITLE_MAX, true);
+  updateCounter(caseHistoryCounter, caseClinicalHistory.value, CASE_CLINICAL_HISTORY_MAX, false);
+  updateCounter(caseFindingsCounter, caseFindings.value, CASE_FINDINGS_MAX, false);
+  const tags = parseTags(caseTags.value);
+  caseTagsHint.textContent = tags.length
+    ? `${tags.length} tag${tags.length === 1 ? '' : 's'}: ${tags.join(', ')}`
+    : '';
+  const v = validateCaseForm();
+  caseValidation.textContent = v.message;
+  caseValidation.classList.toggle('error', !v.ok);
+  btnCaseReady.disabled = !v.ok;
+}
+
+function persistCaseDraft(): void {
+  try {
+    sessionStorage.setItem(CASE_DRAFT_KEY, JSON.stringify(readCaseForm()));
+  } catch { /* storage full / disabled — drop silently */ }
+}
+
+function restoreCaseDraft(): Partial<CaseFormShape> | null {
+  try {
+    const raw = sessionStorage.getItem(CASE_DRAFT_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as Partial<CaseFormShape>;
+  } catch {
+    return null;
+  }
+}
+
+function clearCaseDraft(): void {
+  try { sessionStorage.removeItem(CASE_DRAFT_KEY); } catch { /* ignore */ }
+}
+
+function resetCaseForm(): void {
+  writeCaseForm(emptyCaseForm());
+  refreshCaseFormUI();
+}
+
+// Called whenever we have a fresh study summary to work with — either right
+// after anonymisation, or after /scan via loadFolder. Pre-fills any field the
+// user hasn't already touched (existing values win over derived ones, so a
+// reload doesn't clobber in-progress edits).
+function hydrateCaseForm(summary: SummaryPayload | null, outputRoot: string | null): void {
+  caseDetails.hidden = !(summary && outputRoot);
+  if (!summary || !outputRoot) return;
+
+  const derived = deriveDefaultCase(summary, outputRoot);
+  const draft = restoreCaseDraft();
+  const current = readCaseForm();
+  const hasAnyCurrentInput = !!(
+    current.title || current.clinical_history || current.findings
+    || current.case_discussion || current.tags.length
+    || current.modality || current.body_part || current.patient_age_band
+    || current.patient_sex
+  );
+
+  // Priority: existing in-memory input > sessionStorage draft > derived.
+  const seed: Partial<CaseFormShape> = {
+    ...(derived as Partial<CaseFormShape>),
+    ...(draft ?? {}),
+    ...(hasAnyCurrentInput ? current : {}),
+  };
+  writeCaseForm(seed);
+  refreshCaseFormUI();
+}
+
+populateCaseSelects();
+resetCaseForm();
+
+// Live validation + counters + draft persistence.
+for (const el of [
+  caseTitle, caseModality, caseBodyPart, caseAgeBand, caseSex, caseVisibility,
+  caseClinicalHistory, caseFindings, caseDiscussion, caseTags,
+] as HTMLElement[]) {
+  el.addEventListener('input', () => {
+    refreshCaseFormUI();
+    persistCaseDraft();
+  });
+  el.addEventListener('change', () => {
+    refreshCaseFormUI();
+    persistCaseDraft();
+  });
+}
+
+btnCaseReady.addEventListener('click', () => {
+  const v = validateCaseForm();
+  if (!v.ok) {
+    refreshCaseFormUI();
+    return;
+  }
+  if (!studyMeta || !anonOutput) {
+    write('case: missing anonymise summary or output root');
+    return;
+  }
+  const form = readCaseForm();
+  const fullCase: Case = {
+    ...form,
+    source_summary: studyMeta,
+    output_root: anonOutput,
+  };
+  // The actual Radiopaedia upload is a future issue. For now, build the
+  // placeholder payload and log it so the flow is visible end-to-end.
+  const payload = buildCasePayload(fullCase);
+  write(`case ready — ${form.title} (${form.modality ?? 'no modality'}, ${form.visibility})`);
+  console.info('[renderer] upload payload (placeholder):', payload);
+});
+
+// Try to restore any previously-saved draft at startup — harmless if no
+// summary is loaded yet, because the fields will be hidden until one is.
+const bootDraft = restoreCaseDraft();
+if (bootDraft) {
+  writeCaseForm(bootDraft);
+  refreshCaseFormUI();
+}
 
 setState('idle');
 loadPresets();
