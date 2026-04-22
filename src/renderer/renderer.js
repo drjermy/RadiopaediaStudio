@@ -257,7 +257,12 @@ async function openViewerForSeries(studyIdx, seriesIdx) {
   await setupTrim(se);
   viewerSection.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   try {
-    await window.viewerAPI.open(se.folder, viewerCanvas, { forceStack: se.kind === 'derived' });
+    await window.viewerAPI.open(se.folder, viewerCanvas, {
+      forceStack: se.kind === 'derived',
+      sliceThickness: se.slice_thickness,
+      sliceSpacing: se.slice_spacing,
+      orientation: se.orientation,
+    });
   } catch (e) {
     write(`viewer error: ${e.message || e}`);
     closeViewer();
@@ -423,15 +428,31 @@ function fmtMm(mm) {
   return (Math.round(mm * 10) / 10).toString().replace(/\.0$/, '');
 }
 
+// Same notation as series labels: "3/2 mm" for abut/overlap, "3+0.5 mm"
+// for gaps. Only used when at native in the acquisition orientation —
+// otherwise we just show the slab number ("5 mm"), since the source
+// spacing concept doesn't carry through a thickened reformat.
+function thicknessLabel({ slabMm, atSourceNative, sourceThickness, sourceSpacing }) {
+  if (atSourceNative && sourceThickness != null) {
+    const th = sourceThickness;
+    const sp = sourceSpacing;
+    if (sp == null) return `${fmtMm(th)} mm (native)`;
+    if (sp > th + 0.01)            return `${fmtMm(th)}+${fmtMm(sp - th)} mm (native)`;
+    if (Math.abs(sp - th) > 0.01)  return `${fmtMm(th)}/${fmtMm(sp)} mm (native)`;
+    return `${fmtMm(th)} mm (native)`;
+  }
+  return `${fmtMm(slabMm)} mm`;
+}
+
 document.addEventListener('viewer:state', (e) => {
   viewerState = e.detail;
-  const { isVolume, orientation, slabMm, slabIsNative, center, width } = e.detail;
+  const { isVolume, orientation, slabMm, atSourceNative,
+          sourceThickness, sourceSpacing, center, width } = e.detail;
   const bits = [];
   if (isVolume) {
     if (orientation) bits.push(`<span class="k">View</span><span class="v">${orientation}</span>`);
     if (slabMm != null) {
-      const label = `${fmtMm(slabMm)} mm${slabIsNative ? ' (native)' : ''}`;
-      bits.push(`<span class="k">Slab</span><span class="v">${label}</span>`);
+      bits.push(`<span class="k">Thickness</span><span class="v">${thicknessLabel({ slabMm, atSourceNative, sourceThickness, sourceSpacing })}</span>`);
     }
   } else {
     bits.push('<span class="k">Mode</span><span class="v">stack</span>');

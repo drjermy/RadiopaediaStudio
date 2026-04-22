@@ -34,10 +34,23 @@ let cameraHandler = null;
 let trimRange = null; // { start, end } inclusive; null = unrestricted
 let clampInFlight = false;
 let slabIdx = 0;
+let sourceThickness = null;   // SliceThickness from acquisition, mm
+let sourceSpacing = null;     // computed slice spacing along normal, mm
+let sourceOrientation = null; // 'axial' | 'coronal' | 'sagittal' — acquisition plane
 
 function nativeSpacingMm() {
-  if (!currentViewport) return 1;
-  try { return currentViewport.getSpacingInNormalDirection?.() ?? 1; } catch { return 1; }
+  // When viewing in the acquisition orientation, the true Z resolution is
+  // the source slice thickness (e.g. 3 mm CT) — not the in-plane voxel
+  // spacing the volume happens to be sampled at. Use whichever is larger
+  // so the slab readout reflects the actual acquired thickness.
+  let spacing = 1;
+  if (currentViewport) {
+    try { spacing = currentViewport.getSpacingInNormalDirection?.() ?? 1; } catch {}
+  }
+  if (sourceThickness != null && currentOrientation === sourceOrientation) {
+    spacing = Math.max(spacing, sourceThickness);
+  }
+  return spacing;
 }
 
 function effectiveSlab() {
@@ -84,12 +97,24 @@ function emitState() {
       && slab?.isNative === true
     : true;
 
+  // True when we're rendering the acquired data at its native thickness in
+  // the acquisition orientation — lets the status line show the source
+  // "3/2 mm" or "3+0.5 mm" notation instead of just the slab number.
+  const atSourceNative = !!(
+    slab?.isNative
+    && sourceThickness != null
+    && currentOrientation === sourceOrientation
+  );
+
   document.dispatchEvent(new CustomEvent('viewer:state', {
     detail: {
       isVolume: currentIsVolume,
       orientation: currentOrientation,
       slabMm: slab?.mm ?? null,
       slabIsNative: slab?.isNative ?? false,
+      atSourceNative,
+      sourceThickness: atSourceNative ? sourceThickness : null,
+      sourceSpacing: atSourceNative ? sourceSpacing : null,
       isDefaultView,
       center,
       width,
@@ -151,7 +176,10 @@ async function loadStack(folder) {
 }
 
 async function open(folder, container, opts = {}) {
-  const { forceStack = false } = opts;
+  const { forceStack = false, sliceThickness = null, sliceSpacing = null, orientation = null } = opts;
+  sourceThickness = Number.isFinite(sliceThickness) ? sliceThickness : null;
+  sourceSpacing = Number.isFinite(sliceSpacing) ? sliceSpacing : null;
+  sourceOrientation = orientation || null;
   await ensureInitialized();
 
   // Tear down the previous session cleanly. Without removing the viewport
@@ -310,7 +338,11 @@ async function open(folder, container, opts = {}) {
       currentOrientation = orientMap[key];
       currentViewport.setOrientation(orientMap[key]);
       currentViewport.render();
-      emitState();
+      // Native floor differs per orientation (axial = source slice thickness,
+      // coronal/sagittal = in-plane voxel). Re-pick the default and reapply
+      // so the viewport's slabThickness matches what we report in the status.
+      slabIdx = pickDefaultSlabIdx();
+      applySlab();
       return;
     }
     if (e.key === ']') {
