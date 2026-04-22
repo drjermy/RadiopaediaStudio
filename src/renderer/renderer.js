@@ -157,6 +157,7 @@ function renderDropDetails(aggregateDrops, fileCount, kind) {
 }
 
 // Streaming runner ----------------------------------------------------------
+// sidecar: 'python' (backend/) for everything; 'node' (backend-js/) for /anonymize.
 async function runStream(url, body, { sidecar = 'python' } = {}) {
   const getPort = sidecar === 'node' ? window.nodeBackend.getPort : window.backend.getPort;
   const port = await getPort();

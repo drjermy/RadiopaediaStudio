@@ -3,6 +3,10 @@
 // treat both uniformly. Takes absolute file paths — we share the filesystem
 // with the renderer, no multipart uploads.
 //
+// Why this exists: `dicomanon` is Radiopaedia's canonical anonymiser, so the
+// upload path runs through it verbatim. Everything else (MPR, windowing,
+// compression, thumbnails, scan, trim) lives in the Python backend.
+//
 // Usage:   node server.mjs --port 12345
 
 import http from 'node:http';

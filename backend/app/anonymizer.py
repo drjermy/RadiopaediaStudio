@@ -5,6 +5,11 @@ and every private tag. Regenerate Study / Series / SOP Instance UIDs. Set
 the standard de-identification flags. Default-deny: new PHI tags introduced
 by scanner firmware updates can't sneak through just because nobody added
 them to a blocklist.
+
+Note: the runtime /anonymize path now goes through the Node sidecar
+(backend-js/server.mjs) using Radiopaedia's `dicomanon`. This module is kept
+as a reference implementation and to pin test invariants — see
+tests/test_scrub.py and tests/test_uid_remap.py.
 """
 
 from __future__ import annotations
