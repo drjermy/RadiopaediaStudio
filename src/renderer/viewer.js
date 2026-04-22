@@ -117,8 +117,14 @@ function emitState() {
       && Math.abs(width - initialVOI.width) < 0.5
     : true;
 
+  // Default view = the series' acquisition plane at native thickness/spacing.
+  // Falls back to axial when source orientation is unknown.
+  const defaultOrientation =
+    sourceOrientation === 'coronal'  ? OrientationAxis.CORONAL  :
+    sourceOrientation === 'sagittal' ? OrientationAxis.SAGITTAL :
+                                        OrientationAxis.AXIAL;
   const isDefaultView = currentIsVolume
-    ? currentOrientation === OrientationAxis.AXIAL && atNative
+    ? currentOrientation === defaultOrientation && atNative
     : true;
 
   document.dispatchEvent(new CustomEvent('viewer:state', {
@@ -239,12 +245,19 @@ async function open(folder, container, opts = {}) {
   let asVolume = false;
   if (imageIds.length >= 3 && !forceStack) {
     try {
+      // Start the viewport in the series' own acquisition plane — otherwise
+      // a coronal reformat (which sits in the volume as "Z-stacked coronal
+      // slices") opens showing axial-through-that-volume, looking wrong.
+      const initialOrientation =
+        sourceOrientation === 'coronal'  ? OrientationAxis.CORONAL  :
+        sourceOrientation === 'sagittal' ? OrientationAxis.SAGITTAL :
+                                            OrientationAxis.AXIAL;
       renderingEngine.enableElement({
         viewportId: VIEWPORT_ID,
         type: ViewportType.ORTHOGRAPHIC,
         element,
         defaultOptions: {
-          orientation: OrientationAxis.AXIAL,
+          orientation: initialOrientation,
           background: [0, 0, 0],
         },
       });
@@ -276,7 +289,11 @@ async function open(folder, container, opts = {}) {
 
   currentViewport = viewport;
   currentIsVolume = asVolume;
-  currentOrientation = asVolume ? OrientationAxis.AXIAL : null;
+  currentOrientation = asVolume
+    ? (sourceOrientation === 'coronal'  ? OrientationAxis.CORONAL
+     : sourceOrientation === 'sagittal' ? OrientationAxis.SAGITTAL
+     :                                    OrientationAxis.AXIAL)
+    : null;
   initialVOI = null;
 
   renderingEngine.resize(true, true);
