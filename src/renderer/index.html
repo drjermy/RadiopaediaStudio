@@ -392,11 +392,31 @@
       border-radius: 6px;
       pointer-events: none;
     }
+    .trim-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
     .trim-label {
       font-family: ui-monospace, "SF Mono", Menlo, monospace;
       font-size: 11px;
       color: #777;
       padding: 0 4px;
+    }
+    .trim-btn {
+      font-size: 11px;
+      padding: 3px 10px;
+      border-radius: 4px;
+      border: 1px solid #bbb;
+      background: #f7f7f7;
+      color: #222;
+      cursor: pointer;
+    }
+    .trim-btn:disabled {
+      background: #eee;
+      color: #999;
+      cursor: default;
     }
     .drop-details {
       font-size: 12px;
@@ -548,7 +568,10 @@
             <input type="range" id="trim-start" min="0" max="1" value="0" />
             <input type="range" id="trim-end" min="0" max="1" value="1" />
           </div>
-          <div class="trim-label" id="trim-label"></div>
+          <div class="trim-row">
+            <div class="trim-label" id="trim-label"></div>
+            <button id="btn-trim" class="trim-btn" disabled>Trim</button>
+          </div>
         </div>
         <div id="viewer-status" class="viewer-status"></div>
         <fieldset class="op-group viewer-compress">

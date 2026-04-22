@@ -78,27 +78,13 @@ function pickDefaultSlab() {
   slabSpacing   = Math.max(spacingFloor(),   sourceSpacing   ?? spacingFloor());
 }
 
-// Volume dimension index along the current viewport normal. Used to
-// translate "slice N at slabSpacing" into volume voxel positions for trim
-// and goToSlice.
-function orientationNormalDimIdx() {
-  if (currentOrientation === OrientationAxis.CORONAL)  return 1;
-  if (currentOrientation === OrientationAxis.SAGITTAL) return 0;
-  return 2; // axial / default
-}
-
-// Number of slider positions at the current slabSpacing — extent of the
-// volume along the current view normal divided by the step size.
-function currentSliceCount() {
-  if (!currentIsVolume || !currentVolumeId) return null;
-  const vol = cornerstone.cache.getVolume?.(currentVolumeId);
-  if (!vol) return null;
-  const dims = vol.dimensions ?? [0, 0, 0];
-  const spac = vol.spacing ?? [1, 1, 1];
-  const idx = orientationNormalDimIdx();
-  const extent = dims[idx] * spac[idx];
-  if (!extent || !slabSpacing) return null;
-  return Math.max(1, Math.floor(extent / slabSpacing));
+// Trim only makes sense when the slider's index = a source slice index;
+// that's stack mode, or volume mode in the acquisition orientation at the
+// source's native thickness/spacing. The renderer hides the slider when
+// this is false.
+function trimIsApplicable() {
+  if (!currentIsVolume) return true; // stack mode: index = source slice
+  return currentOrientation === sourceOrientation && isAtNative();
 }
 
 function isAtNative() {
@@ -141,7 +127,9 @@ function emitState() {
       orientation: currentOrientation,
       slabThickness: currentIsVolume ? slabThickness : null,
       slabSpacing:   currentIsVolume ? slabSpacing   : null,
-      sliceCount:    currentIsVolume ? currentSliceCount() : null,
+      sourceThickness,
+      sourceSpacing,
+      trimApplicable: trimIsApplicable(),
       isAtNative: atNative,
       isDefaultView,
       center,
@@ -496,6 +484,9 @@ function resetView() {
 }
 
 function setTrimRange(range) {
+  // Slider always represents source slice indices when trim is shown,
+  // and the cornerstone slice index along the acquisition normal also
+  // counts source slices — so no conversion needed.
   trimRange = range && Number.isFinite(range.start) && Number.isFinite(range.end)
     ? { start: range.start, end: range.end }
     : null;
@@ -532,15 +523,15 @@ function goToSlice(idx) {
       const camera = v.getCamera();
       const normal = camera.viewPlaneNormal;
       if (!normal) return;
-      // Slider ticks step by the current slabSpacing (the denominator), not
-      // the voxel grid — so "slice 5" in coronal at 3/2 mm lands at 10 mm,
-      // same feel as axial. Clamp to the volume's extent along this normal.
+      // Trim is hidden in non-acquisition orientations and at non-native
+      // slabs, so this path only runs when slider index = source slice
+      // index along the acquisition normal. One step = one source slice.
       const grid = rawNormalSpacingMm();
-      const n = currentSliceCount() ?? 1;
+      const imageIds = v.getImageIds?.() ?? [];
+      const n = imageIds.length || 1;
       const clamped = Math.max(0, Math.min(n - 1, target));
       const currentSlice = v.getSliceIndex?.() ?? 0;
-      const targetVoxel = Math.round(clamped * slabSpacing / grid);
-      const delta = (targetVoxel - currentSlice) * grid;
+      const delta = (clamped - currentSlice) * grid;
       const fp = camera.focalPoint;
       const pos = camera.position;
       const newFocal = [

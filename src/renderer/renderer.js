@@ -19,6 +19,7 @@ const trimStart = document.getElementById('trim-start');
 const trimEnd = document.getElementById('trim-end');
 const trimFill = document.getElementById('trim-fill');
 const trimLabel = document.getElementById('trim-label');
+const btnTrim = document.getElementById('btn-trim');
 const log = document.getElementById('log');
 
 const inspectedTitle = document.getElementById('inspected-title');
@@ -272,7 +273,6 @@ async function openViewerForSeries(studyIdx, seriesIdx) {
 async function setupTrim(series) {
   // Only show trim on multi-slice series.
   if (!series?.slice_count || series.slice_count < 2) {
-    viewerTrim.hidden = true;
     trimCount = 0;
     return;
   }
@@ -281,27 +281,9 @@ async function setupTrim(series) {
   trimStart.max = trimEnd.max = String(trimCount - 1);
   trimStart.value = '0';
   trimEnd.value = String(trimCount - 1);
-  viewerTrim.hidden = false;
   updateTrimUI();
-}
-
-// Reshape the trim slider for the current orientation/spacing. The viewer
-// emits sliceCount = volume extent along current normal ÷ slabSpacing, so
-// each tick moves by slabSpacing (matches axial-at-source behaviour). Keep
-// the user's current selection as a fraction of the old range.
-function syncTrimCount(newCount) {
-  if (!newCount || newCount < 2 || viewerTrim.hidden) return;
-  if (newCount === trimCount) return;
-  const prevCount = trimCount;
-  const prevLo = parseInt(trimStart.value, 10) || 0;
-  const prevHi = parseInt(trimEnd.value, 10) || 0;
-  const scale = (i) => Math.round(i * (newCount - 1) / Math.max(1, prevCount - 1));
-  trimCount = newCount;
-  trimStart.max = trimEnd.max = String(trimCount - 1);
-  trimStart.value = String(Math.max(0, Math.min(trimCount - 1, scale(prevLo))));
-  trimEnd.value   = String(Math.max(0, Math.min(trimCount - 1, scale(prevHi))));
-  updateTrimUI();
-  pushTrimRangeToViewer();
+  // Visibility is owned by the viewer:state listener (depends on
+  // orientation + native), so don't unhide here.
 }
 
 function currentTrim() {
@@ -334,6 +316,21 @@ function updateTrimUI() {
   trimLabel.textContent = sameAsFull
     ? `All ${trimCount} slices`
     : `Slices ${lo + 1}–${hi + 1} of ${trimCount}  ·  keeping ${kept}`;
+  updateTrimButtonState();
+}
+
+// Trim only makes sense when slider indices correspond to source slice
+// indices — stack mode always, volume mode only when we're in the
+// acquisition orientation at native thickness/spacing.
+function updateTrimButtonState() {
+  if (!btnTrim) return;
+  const lo = parseInt(trimStart.value, 10);
+  const hi = parseInt(trimEnd.value, 10);
+  const moved = !(lo === 0 && hi === trimCount - 1);
+  const vs = viewerState;
+  const indicesAreSourceSlices = vs
+    && (!vs.isVolume || (vs.isVolume && vs.isAtNative));
+  btnTrim.disabled = !moved || !indicesAreSourceSlices || !viewerContext?.folder;
 }
 
 function pushTrimRangeToViewer() {
@@ -354,6 +351,33 @@ trimEnd.addEventListener('input', () => {
   updateTrimUI();
   pushTrimRangeToViewer();
   window.viewerAPI?.goToSlice?.(parseInt(trimEnd.value, 10));
+});
+
+btnTrim?.addEventListener('click', async () => {
+  if (btnTrim.disabled || !viewerContext?.folder || viewerContext.studyIdx == null) return;
+  const lo = parseInt(trimStart.value, 10);
+  const hi = parseInt(trimEnd.value, 10);
+  if (!(hi > lo)) return;
+  const { folder, studyIdx } = viewerContext;
+  const label = `trim-${lo + 1}-${hi + 1}`;
+  const output = appendOutputSuffix(folder, label, 'folder');
+  btnTrim.disabled = true;
+  processingSummary.textContent = `Trimming → ${output}`;
+  setState('processing');
+  try {
+    await runStream('/trim', { input: folder, output, start: lo, end: hi });
+    await appendNewSeries(output, label, studyIdx);
+    setState('done');
+    write(`trimmed ${label}`);
+    // Reload the viewer on the freshly trimmed series.
+    const st = studyMeta?.studies?.[studyIdx];
+    const newIdx = st?.series?.length ? st.series.length - 1 : -1;
+    if (newIdx >= 0) await openViewerForSeries(studyIdx, newIdx);
+  } catch (e) {
+    write(`trim failed: ${e.message || e}`);
+    setState('done');
+    updateTrimButtonState();
+  }
 });
 
 function closeViewer() {
@@ -457,9 +481,13 @@ function thicknessLabel({ slabThickness, slabSpacing, isAtNative }) {
 
 document.addEventListener('viewer:state', (e) => {
   viewerState = e.detail;
-  const { isVolume, orientation, slabThickness, slabSpacing, sliceCount,
-          isAtNative, center, width } = e.detail;
-  if (sliceCount) syncTrimCount(sliceCount);
+  const { isVolume, orientation, slabThickness, slabSpacing,
+          sourceThickness, sourceSpacing, trimApplicable, isAtNative,
+          center, width } = e.detail;
+  // Trim is a source-slice operation; only meaningful in stack mode or in
+  // the acquisition orientation at native thickness/spacing. Hide otherwise.
+  if (trimCount >= 2) viewerTrim.hidden = !trimApplicable;
+  updateTrimButtonState();
   const bits = [];
   if (isVolume) {
     if (orientation) bits.push(`<span class="k">View</span><span class="v">${orientation}</span>`);
@@ -468,6 +496,12 @@ document.addEventListener('viewer:state', (e) => {
     }
   } else {
     bits.push('<span class="k">Mode</span><span class="v">stack</span>');
+    // Stack mode (typically a derived series) — the volume controls aren't
+    // active, but the source thickness/spacing are still known and worth
+    // showing so the user can tell what they're looking at.
+    if (sourceThickness != null) {
+      bits.push(`<span class="k">Thickness</span><span class="v">${thicknessLabel({ slabThickness: sourceThickness, slabSpacing: sourceSpacing ?? sourceThickness, isAtNative: true })}</span>`);
+    }
   }
   if (center != null && width != null) {
     bits.push(`<span class="k">W/L</span><span class="v">${Math.round(center)} / ${Math.round(width)}</span>`);
