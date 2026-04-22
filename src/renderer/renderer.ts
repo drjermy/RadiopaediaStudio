@@ -62,6 +62,7 @@ const inspectedPath = req<HTMLDivElement>('inspected-path');
 const processingSummary = req<HTMLParagraphElement>('processing-summary');
 const progressBar = req<HTMLProgressElement>('progress-bar');
 const progressLabel = req<HTMLSpanElement>('progress-label');
+const btnCancelRun = req<HTMLButtonElement>('btn-cancel-run');
 const doneTitle = req<HTMLHeadingElement>('done-title');
 const btnRevealMain = req<HTMLButtonElement>('btn-reveal-main');
 const dropDetails = req<HTMLDetailsElement>('drop-details');
@@ -103,6 +104,11 @@ let studyMeta: SummaryPayload | null = null; // { studies: [{ ..., series: [...]
 let viewerContext: ViewerContext | null = null; // { studyIdx, seriesIdx, folder } for Save
 let viewerState: ViewerStateDetail | null = null; // latest viewer:state detail
 let trimCount = 0;
+// Owns the AbortSignal for the currently-running streaming op (anonymise /
+// trim / transform / window). Set by the wrapper in each long-running
+// function before it calls runStream; the Cancel button calls .abort() on
+// it. Cleared on settle (success, error, or cancellation).
+let currentAbortController: AbortController | null = null;
 
 // Helpers -------------------------------------------------------------------
 function write(msg: string): void {
@@ -130,6 +136,8 @@ function setState(next: AppState): void {
   panelProcessing.classList.toggle('active', next === 'processing');
   panelDone.classList.toggle('active', next === 'done');
   btnReset.hidden = next === 'idle';
+  // Cancel button is only meaningful while a run is streaming.
+  btnCancelRun.hidden = next !== 'processing' || !currentAbortController;
 }
 
 function basename(p: string | null | undefined): string {
@@ -219,6 +227,7 @@ function renderDropDetails(
 // sidecar: 'python' (backend/) for everything; 'node' (backend-js/) for /anonymize.
 interface RunStreamOpts {
   sidecar?: 'python' | 'node';
+  signal?: AbortSignal;
 }
 
 interface StreamResult {
@@ -227,12 +236,13 @@ interface StreamResult {
   count?: number;
   error_count?: number;
   output?: string;
+  cancelled?: boolean;
 }
 
 async function runStream(
   url: string,
   body: unknown,
-  { sidecar = 'python' }: RunStreamOpts = {},
+  { sidecar = 'python', signal }: RunStreamOpts = {},
 ): Promise<StreamResult> {
   const getPort = sidecar === 'node' ? window.nodeBackend.getPort : window.backend.getPort;
   const port = await getPort();
@@ -246,6 +256,7 @@ async function runStream(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    signal,
   });
   if (!res.ok) {
     const err = await res.text();
@@ -315,18 +326,31 @@ async function runStream(
     }
   };
 
-  for (;;) {
-    const { value, done: streamDone } = await reader.read();
-    if (streamDone) break;
-    buffer += decoder.decode(value, { stream: true });
-    let idx: number;
-    while ((idx = buffer.indexOf('\n')) >= 0) {
-      const line = buffer.slice(0, idx).trim();
-      buffer = buffer.slice(idx + 1);
-      if (line) consume(line);
+  try {
+    for (;;) {
+      const { value, done: streamDone } = await reader.read();
+      if (streamDone) break;
+      buffer += decoder.decode(value, { stream: true });
+      let idx: number;
+      while ((idx = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, idx).trim();
+        buffer = buffer.slice(idx + 1);
+        if (line) consume(line);
+      }
     }
+    if (buffer.trim()) consume(buffer.trim());
+  } catch (e) {
+    // AbortError on the reader surfaces when the user clicks Cancel and we
+    // call controller.abort(). Treat it as a clean termination: return the
+    // partial result with cancelled=true so callers can branch on it
+    // without seeing the abort as a thrown error.
+    const name = (e as { name?: string })?.name;
+    if (name === 'AbortError' || signal?.aborted) {
+      write('cancelled');
+      return { ...final, aggregateDrops, cancelled: true };
+    }
+    throw e;
   }
-  if (buffer.trim()) consume(buffer.trim());
   return { ...final, aggregateDrops };
 }
 
@@ -474,10 +498,17 @@ btnTrim?.addEventListener('click', async () => {
   const output = appendOutputSuffix(folder, label, 'folder');
   btnTrim.disabled = true;
   processingSummary.textContent = `Trimming → ${basename(output)}`;
+  currentAbortController = new AbortController();
   setState('processing');
   try {
     const trimReq: TrimRequest = { input: folder, output, start: lo, end: hi };
-    await runStream('/trim', trimReq);
+    const result = await runStream('/trim', trimReq,
+      { signal: currentAbortController.signal });
+    if (result.cancelled) {
+      closeViewer();
+      setState('idle');
+      return;
+    }
     // Close the viewer first — Cornerstone's image cache still holds
     // references to the pre-trim stack; reopening on the new folder while
     // the cache is live was only loading the first few slices.
@@ -491,6 +522,8 @@ btnTrim?.addEventListener('click', async () => {
     write(`trim failed: ${(e as Error).message || e}`);
     setState('done');
     updateTrimButtonState();
+  } finally {
+    currentAbortController = null;
   }
 });
 
@@ -572,24 +605,31 @@ async function saveViewerAsVersion(): Promise<void> {
   const output = appendOutputSuffix(folder, suffix, 'folder');
 
   processingSummary.textContent = `Saving ${suffix} version → ${basename(output)}`;
+  currentAbortController = new AbortController();
   setState('processing');
 
   try {
+    const signal = currentAbortController.signal;
+    let result: StreamResult;
     if (trim && !spec.reformat && !spec.window && !spec.compress) {
       // Trim only — fast path via /trim (copy subset with fresh UIDs)
       const trimReq: TrimRequest = {
         input: folder, output, start: trim.start, end: trim.end,
       };
-      await runStream('/trim', trimReq);
+      result = await runStream('/trim', trimReq, { signal });
     } else if (trim) {
       // Combining trim with other ops isn't supported yet — fall through
       // to /transform with the other ops and drop the trim, with a warning.
       write('note: trim is not combined with other ops yet — saved without trim');
       const tReq: TransformRequest = { input: folder, output, ...spec };
-      await runStream('/transform', tReq);
+      result = await runStream('/transform', tReq, { signal });
     } else {
       const tReq: TransformRequest = { input: folder, output, ...spec };
-      await runStream('/transform', tReq);
+      result = await runStream('/transform', tReq, { signal });
+    }
+    if (result.cancelled) {
+      setState('done');
+      return;
     }
     await appendNewSeries(output, suffix, studyIdx);
     setState('done');
@@ -597,6 +637,8 @@ async function saveViewerAsVersion(): Promise<void> {
   } catch (e) {
     write(`save failed: ${(e as Error).message || e}`);
     setState('done');
+  } finally {
+    currentAbortController = null;
   }
 }
 
@@ -849,11 +891,18 @@ async function runAnonymise(): Promise<void> {
   processingSummary.textContent = pending.kind === 'folder'
     ? `Anonymising & analysing ${pending.dicom_count} files → ${basename(pending.output)}`
     : `Anonymising & analysing ${pending.name} → ${basename(pending.output)}`;
+  currentAbortController = new AbortController();
   setState('processing');
 
   try {
     const result = await runStream('/anonymize',
-      { input: pending.input, output: pending.output }, { sidecar: 'node' });
+      { input: pending.input, output: pending.output },
+      { sidecar: 'node', signal: currentAbortController.signal });
+
+    if (result.cancelled) {
+      setState('idle');
+      return;
+    }
 
     anonOutput = result.output ?? null;
     studyMeta = result.summary || null;
@@ -876,6 +925,8 @@ async function runAnonymise(): Promise<void> {
   } catch (e) {
     write(`error: ${(e as Error).message || e}`);
     setState('inspected');
+  } finally {
+    currentAbortController = null;
   }
 }
 
@@ -1069,6 +1120,15 @@ btnOpenFolder?.addEventListener('click', async () => {
 // Buttons -------------------------------------------------------------------
 btnAnonymise.addEventListener('click', runAnonymise);
 btnCancelInspect.addEventListener('click', () => { pending = null; setState('idle'); });
+btnCancelRun.addEventListener('click', () => {
+  // The user wants to stop — tell the fetch to abort. runStream catches
+  // the AbortError, logs "cancelled", and returns { cancelled: true };
+  // each caller then resets its own UI state (usually back to idle).
+  if (currentAbortController) {
+    write('Cancelled by user');
+    currentAbortController.abort();
+  }
+});
 btnReset.addEventListener('click', () => {
   closeViewer();
   pending = null;

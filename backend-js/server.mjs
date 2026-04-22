@@ -186,7 +186,12 @@ export function anonymiseBuffer(inputBuffer) {
 }
 
 // Stream NDJSON events for a folder or file input.
-async function *iterAnonymise(inputPath, outputPath) {
+//
+// `isCancelled`, if passed, is a zero-arg function that returns true once
+// the client has disconnected — the loop checks it before each file and
+// bails out mid-stream. Partial output left on disk is intentional
+// (matches the Python sidecar's semantics); no cleanup is attempted.
+export async function *iterAnonymise(inputPath, outputPath, isCancelled) {
   const stat = fs.statSync(inputPath);
   const isDir = stat.isDirectory();
   const files = isDir
@@ -202,6 +207,7 @@ async function *iterAnonymise(inputPath, outputPath) {
   let errorCount = 0;
 
   for (const src of files) {
+    if (isCancelled && isCancelled()) return;
     const rel = isDir ? path.relative(inputPath, src) : path.basename(src);
     const dst = isDir ? path.join(outputPath, rel) : outputPath;
 
@@ -276,6 +282,8 @@ async function *iterAnonymise(inputPath, outputPath) {
     }
   }
 
+  if (isCancelled && isCancelled()) return;
+
   // Flatten studies -> summary with series + folder paths for downstream
   // thumbnail / reformat targeting.
   const outStudies = [];
@@ -326,8 +334,17 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify({ detail: `input not found: ${redactPath(body.input)}` }));
         return;
       }
+      // Client disconnect: flip a flag so the generator can bail out
+      // between files. Node's `req` fires 'close' whether the body was
+      // fully read or the socket was torn down mid-response, and
+      // `aborted` covers explicit abort. We cover both.
+      let clientClosed = false;
+      const markClosed = () => { clientClosed = true; };
+      req.on('aborted', markClosed);
+      req.on('close', markClosed);
       res.writeHead(200, { 'content-type': 'application/x-ndjson' });
-      for await (const evt of iterAnonymise(body.input, body.output)) {
+      for await (const evt of iterAnonymise(body.input, body.output, () => clientClosed)) {
+        if (clientClosed) break;
         res.write(JSON.stringify(evt) + '\n');
       }
       res.end();

@@ -15,6 +15,7 @@ tests/test_scrub.py and tests/test_uid_remap.py.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Callable
 
 import pydicom
 from pydicom.datadict import keyword_for_tag
@@ -202,7 +203,13 @@ def _first_num(v):
         return None
 
 
-def iter_scrub_folder(input_dir: Path, output_dir: Path, *, summary_out: dict | None = None):
+def iter_scrub_folder(
+    input_dir: Path,
+    output_dir: Path,
+    *,
+    summary_out: dict | None = None,
+    is_cancelled: Callable[[], bool] | None = None,
+):
     """Yield per-file results as they're processed. Per-file failures are
     yielded rather than raised. UIDs are remapped consistently across the
     whole folder: same original Study/Series/FrameOfRef UIDs map to the
@@ -213,6 +220,10 @@ def iter_scrub_folder(input_dir: Path, output_dir: Path, *, summary_out: dict | 
     metadata collected during the pass — modality, body part, per-series
     orientation, slice counts, slice thickness. Caller can emit it after
     iteration as a UI-visible summary event.
+
+    is_cancelled, if supplied, is polled once per file between iterations;
+    returning True stops the loop mid-stream (partial output left on disk,
+    no summary emitted).
     """
     remap = _make_group_remap()
     # Keyed by original StudyInstanceUID; each study has its own series
@@ -223,6 +234,8 @@ def iter_scrub_folder(input_dir: Path, output_dir: Path, *, summary_out: dict | 
     series_paths: dict[str, list[Path]] = {}
 
     for src in find_dicoms(input_dir):
+        if is_cancelled is not None and is_cancelled():
+            return
         rel = src.relative_to(input_dir)
         dst = output_dir / rel
         try:

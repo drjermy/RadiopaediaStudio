@@ -12,6 +12,7 @@ already-anonymised output.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Callable
 
 import pydicom
 from pydicom.uid import generate_uid
@@ -70,12 +71,18 @@ def apply_window_file(
 
 def iter_apply_window_folder(
     input_dir: Path, output_dir: Path, center: float, width: float,
+    *,
+    is_cancelled: Callable[[], bool] | None = None,
 ):
     """Mirror input_dir into output_dir, writing windowed copies of every
     *.dcm. Files that were originally in the same series end up in the
     same NEW series (distinct from the base); Study UID and Frame of
     Reference UID are preserved. Per-file failures yielded rather than
-    raised."""
+    raised.
+
+    is_cancelled, if supplied, is polled once per file; returning True
+    stops the loop immediately (partial output left on disk).
+    """
     from app.anonymizer import find_dicoms
 
     cache: dict[str, str] = {}
@@ -87,6 +94,8 @@ def iter_apply_window_folder(
         return cache[original]
 
     for src in find_dicoms(input_dir):
+        if is_cancelled is not None and is_cancelled():
+            return
         rel = src.relative_to(input_dir)
         dst = output_dir / rel
         try:

@@ -8,12 +8,14 @@ chosen by the parent (passed via --port). Paths are absolute local paths
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import shutil
+import threading
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -128,6 +130,36 @@ def inspect(req: InspectRequest) -> dict:
 
 def _line(obj: dict) -> bytes:
     return (json.dumps(obj) + '\n').encode('utf-8')
+
+
+def _make_cancel_flag(request: Request) -> tuple[threading.Event, asyncio.Task]:
+    """Watch `request` for client disconnect and flip a threadsafe Event.
+
+    Our streaming generators are sync (heavy pydicom work off the event
+    loop); they accept an ``is_cancelled`` callable and poll it between
+    files. ``StreamingResponse`` iterates sync generators in a threadpool,
+    so a plain ``threading.Event.is_set`` gives the generator a safe way
+    to observe client disconnect without awaiting anything.
+
+    Returns (flag, watchdog_task) — caller doesn't need to await the task;
+    it self-terminates when the flag flips or the generator stops iterating.
+    """
+    flag = threading.Event()
+
+    async def _watch() -> None:
+        # Poll every 250ms — fast enough that clicking Cancel stops the
+        # next file, slow enough that a big folder doesn't hammer the loop.
+        try:
+            while not flag.is_set():
+                if await request.is_disconnected():
+                    flag.set()
+                    return
+                await asyncio.sleep(0.25)
+        except asyncio.CancelledError:
+            return
+
+    task = asyncio.create_task(_watch())
+    return flag, task
 
 
 @app.get('/health')
@@ -296,12 +328,15 @@ def thumbnails(req: ThumbnailsRequest) -> dict:
 
 
 @app.post('/anonymize')
-def anonymize(req: AnonymizeRequest) -> StreamingResponse:
+async def anonymize(req: AnonymizeRequest, request: Request) -> StreamingResponse:
     """Stream NDJSON — one JSON object per line. Event types:
       start   {mode, total, output}
       file    {input, output, kept, dropped, dropped_tags}
       error   {input, error}
       done    {count, error_count, output}
+
+    Client disconnect is observed via a watchdog and propagated into the
+    generator so big runs bail out promptly instead of writing every file.
     """
     in_path = Path(req.input)
     out_path = Path(req.output)
@@ -320,19 +355,25 @@ def anonymize(req: AnonymizeRequest) -> StreamingResponse:
 
     if in_path.is_dir():
         total = len(find_dicoms(in_path))
+        cancel_flag, _watchdog = _make_cancel_flag(request)
 
         def gen_folder():
             yield _line({'type': 'start', 'mode': 'folder', 'total': total, 'output': str(out_path)})
             count = 0
             error_count = 0
             summary: dict = {}
-            for result in iter_scrub_folder(in_path, out_path, summary_out=summary):
+            for result in iter_scrub_folder(
+                in_path, out_path, summary_out=summary,
+                is_cancelled=cancel_flag.is_set,
+            ):
                 if 'error' in result:
                     error_count += 1
                     yield _line({'type': 'error', **result})
                 else:
                     count += 1
                     yield _line({'type': 'file', **result})
+            if cancel_flag.is_set():
+                return
             if summary:
                 yield _line({'type': 'summary', **summary})
             yield _line({'type': 'done', 'count': count, 'error_count': error_count, 'output': str(out_path)})
@@ -342,7 +383,7 @@ def anonymize(req: AnonymizeRequest) -> StreamingResponse:
 
 
 @app.post('/window')
-def window(req: WindowRequest) -> StreamingResponse:
+async def window(req: WindowRequest, request: Request) -> StreamingResponse:
     in_path = Path(req.input)
     out_path = Path(req.output)
 
@@ -360,18 +401,24 @@ def window(req: WindowRequest) -> StreamingResponse:
 
     if in_path.is_dir():
         total = len(find_dicoms(in_path))
+        cancel_flag, _watchdog = _make_cancel_flag(request)
 
         def gen_folder():
             yield _line({'type': 'start', 'mode': 'folder', 'total': total, 'output': str(out_path)})
             count = 0
             error_count = 0
-            for result in iter_apply_window_folder(in_path, out_path, req.center, req.width):
+            for result in iter_apply_window_folder(
+                in_path, out_path, req.center, req.width,
+                is_cancelled=cancel_flag.is_set,
+            ):
                 if 'error' in result:
                     error_count += 1
                     yield _line({'type': 'error', **result})
                 else:
                     count += 1
                     yield _line({'type': 'file', **result})
+            if cancel_flag.is_set():
+                return
             yield _line({'type': 'done', 'count': count, 'error_count': error_count, 'output': str(out_path)})
         return StreamingResponse(gen_folder(), media_type='application/x-ndjson')
 
@@ -379,7 +426,7 @@ def window(req: WindowRequest) -> StreamingResponse:
 
 
 @app.post('/trim')
-def trim(req: TrimRequest) -> StreamingResponse:
+async def trim(req: TrimRequest, request: Request) -> StreamingResponse:
     """Copy a contiguous sub-range of DICOM files into a new folder with a
     fresh SeriesInstanceUID + fresh SOPInstanceUIDs, preserving Study +
     FrameOfReference UIDs so it still groups under the same case."""
@@ -402,6 +449,7 @@ def trim(req: TrimRequest) -> StreamingResponse:
         f'subset={len(subset)} → out={redact_path(out_path)}',
         flush=True,
     )
+    cancel_flag, _watchdog = _make_cancel_flag(request)
 
     def gen():
         yield _line({'type': 'start', 'mode': 'folder', 'total': len(subset), 'output': str(out_path)})
@@ -415,6 +463,8 @@ def trim(req: TrimRequest) -> StreamingResponse:
             return series_remap[orig]
 
         for src in subset:
+            if cancel_flag.is_set():
+                return
             rel = src.relative_to(in_path)
             dst = out_path / rel
             try:
@@ -437,7 +487,7 @@ def trim(req: TrimRequest) -> StreamingResponse:
 
 
 @app.post('/transform')
-def transform(req: TransformRequest) -> StreamingResponse:
+async def transform(req: TransformRequest, request: Request) -> StreamingResponse:
     """Compose reformat + window in one call.
 
     - reformat set, window unset → MPR reformat (window tags copied from input)
@@ -462,6 +512,8 @@ def transform(req: TransformRequest) -> StreamingResponse:
         elif req.compress.mode != 'lossless':
             raise HTTPException(status_code=400, detail=f'unknown compress mode: {req.compress.mode}')
 
+    cancel_flag, _watchdog = _make_cancel_flag(request)
+
     if req.reformat is not None:
         spec = req.reformat
         wc = req.window.center if req.window else None
@@ -474,6 +526,7 @@ def transform(req: TransformRequest) -> StreamingResponse:
             for evt in iter_reformat_series(
                 in_path, out_path, spec.orientation, spec.thickness, spec.spacing,
                 spec.mode, window_center=wc, window_width=ww,
+                is_cancelled=cancel_flag.is_set,
             ):
                 if evt['type'] == 'error':
                     error_count += 1
@@ -483,12 +536,19 @@ def transform(req: TransformRequest) -> StreamingResponse:
                     yield _line(evt)
                 else:
                     yield _line(evt)
+            if cancel_flag.is_set():
+                return
             if req.compress is not None and count > 0:
                 yield _line({'type': 'phase', 'label': 'Compressing'})
-                for evt in iter_recompress_in_place(out_path, ratio=compress_ratio):
+                for evt in iter_recompress_in_place(
+                    out_path, ratio=compress_ratio,
+                    is_cancelled=cancel_flag.is_set,
+                ):
                     if 'error' in evt:
                         error_count += 1
                         yield _line({'type': 'error', **evt})
+                if cancel_flag.is_set():
+                    return
             yield _line({'type': 'done', 'count': count, 'error_count': error_count, 'output': str(out_path)})
         return StreamingResponse(gen_reformat(), media_type='application/x-ndjson')
 
@@ -511,22 +571,30 @@ def transform(req: TransformRequest) -> StreamingResponse:
                     error_count += 1
                     yield _line({'type': 'error', 'input': redact_path(in_path), 'error': redact_error_message(f'{type(e).__name__}: {e}')})
             else:
-                for result in iter_apply_window_folder(in_path, out_path, w.center, w.width):
+                for result in iter_apply_window_folder(
+                    in_path, out_path, w.center, w.width,
+                    is_cancelled=cancel_flag.is_set,
+                ):
                     if 'error' in result:
                         error_count += 1
                         yield _line({'type': 'error', **result})
                     else:
                         count += 1
                         yield _line({'type': 'file', **result})
+            if cancel_flag.is_set():
+                return
             # Apply compression to window output if requested
             if req.compress is not None and count > 0:
                 yield _line({'type': 'phase', 'label': 'Compressing'})
                 for evt in iter_recompress_in_place(
                     out_path if out_path.is_dir() else out_path.parent, ratio=compress_ratio,
+                    is_cancelled=cancel_flag.is_set,
                 ):
                     if 'error' in evt:
                         error_count += 1
                         yield _line({'type': 'error', **evt})
+                if cancel_flag.is_set():
+                    return
         elif req.compress is not None:
             # Compress-only path
             if in_path.is_file():
@@ -539,13 +607,18 @@ def transform(req: TransformRequest) -> StreamingResponse:
                     error_count += 1
                     yield _line({'type': 'error', 'input': redact_path(in_path), 'error': redact_error_message(f'{type(e).__name__}: {e}')})
             else:
-                for result in iter_compress_folder(in_path, out_path, ratio=compress_ratio):
+                for result in iter_compress_folder(
+                    in_path, out_path, ratio=compress_ratio,
+                    is_cancelled=cancel_flag.is_set,
+                ):
                     if 'error' in result:
                         error_count += 1
                         yield _line({'type': 'error', **result})
                     else:
                         count += 1
                         yield _line({'type': 'file', **result})
+            if cancel_flag.is_set():
+                return
 
         yield _line({'type': 'done', 'count': count, 'error_count': error_count, 'output': str(out_path)})
     return StreamingResponse(gen_folder(), media_type='application/x-ndjson')

@@ -14,6 +14,7 @@ Adapted from the original:
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 import pydicom
@@ -189,9 +190,13 @@ def iter_write_series(images: list[np.ndarray], positions: list[np.ndarray], iop
                       pixel_spacing: tuple[float, float], template: Dataset,
                       output_dir: Path, orientation: str, thickness: float,
                       spacing: float, mode: str, window_center: float | None,
-                      window_width: float | None):
+                      window_width: float | None,
+                      is_cancelled: Callable[[], bool] | None = None):
     """Write the reformat output slice-by-slice. Yields each written path
-    so the caller can stream progress events."""
+    so the caller can stream progress events.
+
+    is_cancelled, if supplied, is polled before each slice write; returning
+    True stops iteration (partial output left on disk)."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
     series_uid = generate_uid(prefix='2.25.')
@@ -205,6 +210,8 @@ def iter_write_series(images: list[np.ndarray], positions: list[np.ndarray], iop
     stacked = np.round(stacked).astype(np.int16)
 
     for idx, (img, ipp) in enumerate(zip(stacked, positions), start=1):
+        if is_cancelled is not None and is_cancelled():
+            return
         ds = Dataset()
         for tag in _TEMPLATE_TAGS:
             if tag in template:
@@ -261,7 +268,8 @@ def iter_write_series(images: list[np.ndarray], positions: list[np.ndarray], iop
 def iter_reformat_series(input_dir: Path, output_dir: Path, orientation: str,
                          thickness: float, spacing: float, mode: str,
                          window_center: float | None = None,
-                         window_width: float | None = None):
+                         window_width: float | None = None,
+                         is_cancelled: Callable[[], bool] | None = None):
     """Generator that yields phase/file events for UI streaming.
 
     Events:
@@ -269,6 +277,9 @@ def iter_reformat_series(input_dir: Path, output_dir: Path, orientation: str,
       {'type': 'total', 'total': int}   — expected output slice count (once known)
       {'type': 'file',  'output': str}  — a slice was written
       {'type': 'error', 'error': str}   — fatal; iteration stops
+
+    is_cancelled, if supplied, is polled before each written slice; returning
+    True stops the stream (partial output left on disk).
     """
     if orientation not in ORIENTATIONS:
         yield {'type': 'error', 'error': f'invalid orientation: {orientation}'}
@@ -300,7 +311,7 @@ def iter_reformat_series(input_dir: Path, output_dir: Path, orientation: str,
         for written_path in iter_write_series(
             images, positions, iop, pixel_spacing, meta['template'],
             output_dir, orientation, thickness, spacing, mode,
-            window_center, window_width,
+            window_center, window_width, is_cancelled=is_cancelled,
         ):
             yield {'type': 'file', 'output': str(written_path)}
     except Exception as e:

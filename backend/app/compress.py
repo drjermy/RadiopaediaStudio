@@ -9,6 +9,7 @@ Requires pylibjpeg + pylibjpeg-openjpeg at runtime.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Callable
 
 import pydicom
 from pydicom.uid import JPEG2000, JPEG2000Lossless, generate_uid
@@ -57,14 +58,23 @@ def compress_file(input_path: Path, output_path: Path, ratio: float | None = Non
     ds.save_as(output_path, enforce_file_format=True)
 
 
-def iter_compress_folder(input_dir: Path, output_dir: Path, ratio: float | None = None):
+def iter_compress_folder(
+    input_dir: Path, output_dir: Path, ratio: float | None = None,
+    *,
+    is_cancelled: Callable[[], bool] | None = None,
+):
     """Mirror input_dir into output_dir, re-encoding every DICOM as JPEG 2000
     (lossless if ratio is None, else lossy at the given ratio). A compressed
     copy is a distinct series, so remap SeriesInstanceUID (consistently per
     source series) and regenerate every SOPInstanceUID — otherwise scan
-    groups the base and its compressed variants into one series."""
+    groups the base and its compressed variants into one series.
+
+    is_cancelled, if supplied, is polled once per file; returning True
+    stops the loop immediately (partial output left on disk)."""
     series_remap: dict[str, str] = {}
     for src in find_dicoms(input_dir):
+        if is_cancelled is not None and is_cancelled():
+            return
         rel = src.relative_to(input_dir)
         dst = output_dir / rel
         try:
@@ -89,11 +99,20 @@ def iter_compress_folder(input_dir: Path, output_dir: Path, ratio: float | None 
             yield {'input': redact_path(src), 'error': redact_error_message(f'{type(e).__name__}: {e}')}
 
 
-def iter_recompress_in_place(folder: Path, ratio: float | None = None):
+def iter_recompress_in_place(
+    folder: Path, ratio: float | None = None,
+    *,
+    is_cancelled: Callable[[], bool] | None = None,
+):
     """Re-encode every DICOM in `folder` as JPEG 2000, writing back to the
     same path. Used to compress the output of reformat/window without
-    needing a temp directory."""
+    needing a temp directory.
+
+    is_cancelled, if supplied, is polled once per file; returning True
+    stops the loop (partial overwrite left on disk)."""
     for f in find_dicoms(folder):
+        if is_cancelled is not None and is_cancelled():
+            return
         try:
             ds = pydicom.dcmread(f)
             if 'PixelData' not in ds:
