@@ -22,8 +22,14 @@ async function createWindow(): Promise<void> {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      devTools: !app.isPackaged,
     },
   });
+  if (app.isPackaged) {
+    mainWindow.webContents.on('devtools-opened', () => {
+      mainWindow?.webContents.closeDevTools();
+    });
+  }
   await mainWindow.loadFile(path.join(rendererRoot, 'index.html'));
   if (process.env.DEVTOOLS === '1') {
     mainWindow.webContents.openDevTools({ mode: 'detach' });
