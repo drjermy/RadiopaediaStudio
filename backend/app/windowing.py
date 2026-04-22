@@ -16,6 +16,8 @@ from pathlib import Path
 import pydicom
 from pydicom.uid import generate_uid
 
+from app.logsafe import redact_path
+
 
 # Centre / width presets as commonly used in clinical display.
 PRESETS: dict[str, tuple[float, float]] = {
@@ -95,4 +97,4 @@ def iter_apply_window_folder(
             ds.save_as(dst, enforce_file_format=True)
             yield {'input': str(src), 'output': str(dst), 'center': center, 'width': width}
         except Exception as e:
-            yield {'input': str(src), 'error': f'{type(e).__name__}: {e}'}
+            yield {'input': redact_path(src), 'error': f'{type(e).__name__}: {e}'}

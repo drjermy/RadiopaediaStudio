@@ -19,6 +19,7 @@ from pydantic import BaseModel
 
 from app.anonymizer import find_dicoms, is_dicom_file, iter_scrub_folder, scrub_file, scan_folder
 from app.compress import iter_compress_folder, iter_recompress_in_place
+from app.logsafe import redact_path
 from app.reformat import MODES as REFORMAT_MODES, ORIENTATIONS, iter_reformat_series
 from app.windowing import (
     PRESETS as WINDOW_PRESETS,
@@ -357,7 +358,7 @@ def anonymize(req: AnonymizeRequest) -> StreamingResponse:
                 yield _line({'type': 'file', 'input': str(in_path), 'output': str(out_path), **info})
                 yield _line({'type': 'done', 'count': 1, 'error_count': 0, 'output': str(out_path)})
             except Exception as e:
-                yield _line({'type': 'error', 'input': str(in_path), 'error': f'{type(e).__name__}: {e}'})
+                yield _line({'type': 'error', 'input': redact_path(in_path), 'error': f'{type(e).__name__}: {e}'})
                 yield _line({'type': 'done', 'count': 0, 'error_count': 1, 'output': str(out_path)})
         return StreamingResponse(gen_file(), media_type='application/x-ndjson')
 
@@ -397,7 +398,7 @@ def window(req: WindowRequest) -> StreamingResponse:
                 yield _line({'type': 'file', 'input': str(in_path), 'output': str(out_path)})
                 yield _line({'type': 'done', 'count': 1, 'error_count': 0, 'output': str(out_path)})
             except Exception as e:
-                yield _line({'type': 'error', 'input': str(in_path), 'error': f'{type(e).__name__}: {e}'})
+                yield _line({'type': 'error', 'input': redact_path(in_path), 'error': f'{type(e).__name__}: {e}'})
                 yield _line({'type': 'done', 'count': 0, 'error_count': 1, 'output': str(out_path)})
         return StreamingResponse(gen_file(), media_type='application/x-ndjson')
 
@@ -441,8 +442,8 @@ def trim(req: TrimRequest) -> StreamingResponse:
         raise HTTPException(status_code=400, detail='end < start')
     subset = files[start:end + 1]
     print(
-        f'[trim] in={in_path} found={len(files)} start={start} end={end} '
-        f'subset={len(subset)} → out={out_path}',
+        f'[trim] in={redact_path(in_path)} found={len(files)} start={start} end={end} '
+        f'subset={len(subset)} → out={redact_path(out_path)}',
         flush=True,
     )
 
@@ -473,7 +474,7 @@ def trim(req: TrimRequest) -> StreamingResponse:
                 yield _line({'type': 'file', 'input': str(src), 'output': str(dst)})
             except Exception as e:
                 error_count += 1
-                yield _line({'type': 'error', 'input': str(src), 'error': f'{type(e).__name__}: {e}'})
+                yield _line({'type': 'error', 'input': redact_path(src), 'error': f'{type(e).__name__}: {e}'})
         yield _line({'type': 'done', 'count': count, 'error_count': error_count, 'output': str(out_path)})
 
     return StreamingResponse(gen(), media_type='application/x-ndjson')
@@ -552,7 +553,7 @@ def transform(req: TransformRequest) -> StreamingResponse:
                     count += 1
                 except Exception as e:
                     error_count += 1
-                    yield _line({'type': 'error', 'input': str(in_path), 'error': f'{type(e).__name__}: {e}'})
+                    yield _line({'type': 'error', 'input': redact_path(in_path), 'error': f'{type(e).__name__}: {e}'})
             else:
                 for result in iter_apply_window_folder(in_path, out_path, w.center, w.width):
                     if 'error' in result:
@@ -580,7 +581,7 @@ def transform(req: TransformRequest) -> StreamingResponse:
                     count += 1
                 except Exception as e:
                     error_count += 1
-                    yield _line({'type': 'error', 'input': str(in_path), 'error': f'{type(e).__name__}: {e}'})
+                    yield _line({'type': 'error', 'input': redact_path(in_path), 'error': f'{type(e).__name__}: {e}'})
             else:
                 for result in iter_compress_folder(in_path, out_path, ratio=compress_ratio):
                     if 'error' in result:

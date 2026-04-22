@@ -20,6 +20,8 @@ import pydicom
 from pydicom.datadict import keyword_for_tag
 from pydicom.uid import generate_uid
 
+from app.logsafe import redact_path
+
 KEEP_TAGS = {
     # File meta / identification
     'SpecificCharacterSet', 'ImageType', 'SOPClassUID', 'SOPInstanceUID',
@@ -295,7 +297,7 @@ def iter_scrub_folder(input_dir: Path, output_dir: Path, *, summary_out: dict | 
                 'dropped_tags': dropped,
             }
         except Exception as e:
-            yield {'input': str(src), 'error': f'{type(e).__name__}: {e}'}
+            yield {'input': redact_path(src), 'error': f'{type(e).__name__}: {e}'}
 
     if summary_out is not None:
         from app.thumbnails import make_thumbnail

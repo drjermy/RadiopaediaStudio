@@ -14,6 +14,7 @@ import pydicom
 from pydicom.uid import JPEG2000, JPEG2000Lossless, generate_uid
 
 from app.anonymizer import find_dicoms
+from app.logsafe import redact_path
 
 
 def encode_jpeg2000(ds, *, ratio: float | None = None) -> None:
@@ -85,7 +86,7 @@ def iter_compress_folder(input_dir: Path, output_dir: Path, ratio: float | None 
             ds.save_as(dst, enforce_file_format=True)
             yield {'input': str(src), 'output': str(dst)}
         except Exception as e:
-            yield {'input': str(src), 'error': f'{type(e).__name__}: {e}'}
+            yield {'input': redact_path(src), 'error': f'{type(e).__name__}: {e}'}
 
 
 def iter_recompress_in_place(folder: Path, ratio: float | None = None):
@@ -103,4 +104,4 @@ def iter_recompress_in_place(folder: Path, ratio: float | None = None):
             ds.save_as(f, enforce_file_format=True)
             yield {'input': str(f), 'output': str(f)}
         except Exception as e:
-            yield {'input': str(f), 'error': f'{type(e).__name__}: {e}'}
+            yield {'input': redact_path(f), 'error': f'{type(e).__name__}: {e}'}

@@ -17,6 +17,38 @@ import { parseArgs } from 'node:util';
 
 import { Message, Anonymize } from 'dicomanon';
 
+// Keep absolute filesystem paths out of logs and streaming `error` events —
+// once upload/telemetry is live, a pre-anon folder name like
+// `PATIENT_SMITH_JOHN_2026` is PHI. Return just enough context (parent-folder
+// basename + file basename) for a user to tell which file failed without
+// leaking the full tree. Mirrors backend/app/logsafe.py:redact_path().
+// See GitHub issue #7.
+export function redactPath(p) {
+  if (p == null) return '';
+  const s = String(p);
+  if (!s) return '';
+  const norm = s.replace(/\\/g, '/');
+  // Strip a leading anchor (POSIX '/' or Windows 'C:/').
+  const noAnchor = norm.replace(/^([a-zA-Z]:)?\/+/, '');
+  if (!noAnchor) return '';
+  const parts = noAnchor.split('/').filter(Boolean);
+  if (parts.length === 0) return '';
+  if (parts.length === 1) return parts[0];
+  return `${parts[parts.length - 2]}/${parts[parts.length - 1]}`;
+}
+
+// Node's built-in error messages (ENOENT, EACCES, etc.) embed absolute
+// paths verbatim, e.g. `ENOENT: no such file or directory, open
+// '/Volumes/.../PATIENT_SMITH_JOHN/1.dcm'`. Replace any quoted POSIX or
+// Windows path with its redacted form, so the error stays informative
+// without the ancestor folder names.
+export function redactErrorMessage(msg) {
+  if (msg == null) return '';
+  const s = String(msg);
+  // Match '/abs/path' or "/abs/path" or C:\... style paths inside quotes.
+  return s.replace(/(['"])((?:[A-Za-z]:)?[\/\\][^'"]+)\1/g, (_m, q, p) => `${q}${redactPath(p)}${q}`);
+}
+
 // Top-level side effects (arg parsing, server start) only run when this
 // module is executed directly. Importing it for tests should be free.
 const IS_MAIN = process.argv[1]
@@ -338,7 +370,7 @@ async function *iterAnonymise(inputPath, outputPath) {
       yield { type: 'file', input: src, output: dst };
     } catch (e) {
       errorCount += 1;
-      yield { type: 'error', input: src, error: `${e.name}: ${e.message}` };
+      yield { type: 'error', input: redactPath(src), error: `${e.name}: ${e.message}` };
     }
   }
 
@@ -389,7 +421,7 @@ const server = http.createServer(async (req, res) => {
       }
       if (!fs.existsSync(body.input)) {
         res.writeHead(400, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ detail: `input not found: ${body.input}` }));
+        res.end(JSON.stringify({ detail: `input not found: ${redactPath(body.input)}` }));
         return;
       }
       res.writeHead(200, { 'content-type': 'application/x-ndjson' });
@@ -403,10 +435,13 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(404);
     res.end();
   } catch (e) {
-    console.error(e);
+    // Node error messages routinely embed absolute paths (ENOENT, EACCES).
+    // Log the error name and a stack trace minus the message so we keep
+    // operationally useful detail without the PHI-shaped folder names.
+    console.error(`[server] ${e.name}: ${redactErrorMessage(e.message)}`);
     if (!res.headersSent) {
       res.writeHead(500, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ detail: `${e.name}: ${e.message}` }));
+      res.end(JSON.stringify({ detail: `${e.name}: ${redactErrorMessage(e.message)}` }));
     }
   }
 });
