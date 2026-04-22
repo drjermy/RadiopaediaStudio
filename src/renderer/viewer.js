@@ -13,9 +13,9 @@ const { Enums, RenderingEngine, volumeLoader } = cornerstone;
 const { ViewportType, OrientationAxis, BlendModes } = Enums;
 const { MouseBindings } = ToolEnums;
 
-const RENDERING_ENGINE_ID = 'pacs-anonymizer-engine';
+const RENDERING_ENGINE_ID = 'radiopaedia-studio-engine';
 const VIEWPORT_ID = 'stack-viewport';
-const TOOL_GROUP_ID = 'pacs-tools';
+const TOOL_GROUP_ID = 'studio-tools';
 
 let initialized = false;
 let renderingEngine = null;

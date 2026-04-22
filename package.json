@@ -1,7 +1,7 @@
 {
-  "name": "pacs-anonymizer",
+  "name": "radiopaedia-studio",
   "version": "0.1.0",
-  "description": "DICOM anonymiser desktop app",
+  "description": "Radiopaedia Studio — desktop app for preparing and uploading DICOM cases to Radiopaedia",
   "main": "dist/main/index.js",
   "scripts": {
     "build:backend": "cd backend && .venv/bin/pyinstaller --noconfirm --clean backend.spec",

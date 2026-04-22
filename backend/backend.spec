@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller spec for the pacs-anonymizer backend. Onedir build
+# PyInstaller spec for the Radiopaedia Studio backend. Onedir build
 # (faster startup than onefile; the backend stays alive for the
 # whole app session so size trade-off favours startup).
 
@@ -34,7 +34,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name='pacs-anonymizer-backend',
+    name='radiopaedia-studio-backend',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -48,5 +48,5 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=False,
-    name='pacs-anonymizer-backend',
+    name='radiopaedia-studio-backend',
 )

@@ -798,7 +798,7 @@ async function loadFolder(folderPath) {
   }
 }
 
-const LAST_FOLDER_KEY = 'pacs-anonymizer:last-folder';
+const LAST_FOLDER_KEY = 'radiopaedia-studio:last-folder';
 
 function persistLastFolder(folder) {
   try { sessionStorage.setItem(LAST_FOLDER_KEY, folder); } catch {}

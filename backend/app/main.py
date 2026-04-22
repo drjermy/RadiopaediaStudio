@@ -26,7 +26,7 @@ from app.windowing import (
     iter_apply_window_folder,
 )
 
-app = FastAPI(title='pacs-anonymizer-backend', version='0.1.0')
+app = FastAPI(title='radiopaedia-studio-backend', version='0.1.0')
 
 
 class InspectRequest(BaseModel):

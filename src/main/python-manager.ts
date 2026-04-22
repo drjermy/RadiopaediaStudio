@@ -57,7 +57,7 @@ function resolveBackend(roots: BackendRoots, port: number): BackendLauncher {
     const binary = path.join(
       roots.resourcesPath,
       'backend-bin',
-      'pacs-anonymizer-backend',
+      'radiopaedia-studio-backend',
     );
     if (!existsSync(binary)) {
       throw new Error(

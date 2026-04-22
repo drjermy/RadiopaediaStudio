@@ -1,5 +1,5 @@
 {
-  "name": "pacs-anonymizer-node-sidecar",
+  "name": "radiopaedia-studio-node-sidecar",
   "version": "0.1.0",
   "description": "Node HTTP sidecar that runs the Radiopaedia dicom-anonymiser",
   "type": "module",

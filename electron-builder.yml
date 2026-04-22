@@ -1,5 +1,5 @@
-appId: com.radiopaedia.pacs-anonymizer
-productName: PACS Anonymizer
+appId: com.radiopaedia.studio
+productName: Radiopaedia Studio
 directories:
   output: build
   buildResources: build-resources
@@ -8,7 +8,7 @@ files:
   - src/renderer/**/*
   - package.json
 extraResources:
-  - from: backend/dist/pacs-anonymizer-backend
+  - from: backend/dist/radiopaedia-studio-backend
     to: backend-bin
     filter:
       - "**/*"

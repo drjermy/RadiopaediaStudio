@@ -88,7 +88,7 @@ def strip_phi(ds) -> tuple[int, int, list[str]]:
             del ds[elem.tag]
 
     ds.PatientIdentityRemoved = 'YES'
-    ds.DeidentificationMethod = 'pacs-anonymizer allowlist scrub'
+    ds.DeidentificationMethod = 'Radiopaedia Studio allowlist scrub'
     if 'BurnedInAnnotation' not in ds:
         ds.BurnedInAnnotation = 'NO'
 
