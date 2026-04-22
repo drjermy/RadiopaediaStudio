@@ -277,6 +277,40 @@
     .study-summary .series-list li .series-delete:hover {
       background: rgba(180, 40, 40, 0.85);
     }
+    /* Trim button: bottom-right of thumb, appears on hover */
+    .study-summary .series-list li .series-trim-btn {
+      position: absolute;
+      bottom: 8px;
+      right: 8px;
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      border: none;
+      background: rgba(0, 0, 0, 0.55);
+      color: rgba(255, 255, 255, 0.95);
+      font-size: 13px;
+      line-height: 1;
+      cursor: pointer;
+      opacity: 0;
+      transition: opacity 0.12s, background 0.12s;
+      padding: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .study-summary .series-list li:hover .series-trim-btn {
+      opacity: 1;
+    }
+    .study-summary .series-list li .series-trim-btn:hover {
+      background: rgba(10, 132, 255, 0.85);
+    }
+    /* Trim-only viewer mode: hide everything except image + slider + Trim */
+    #viewer-section.trim-only .viewer-actions > *:not(#btn-close-viewer),
+    #viewer-section.trim-only #viewer-hint,
+    #viewer-section.trim-only #viewer-status,
+    #viewer-section.trim-only .viewer-compress {
+      display: none !important;
+    }
     .study-summary .series-list .series-desc {
       font-weight: 500;
       color: #333;

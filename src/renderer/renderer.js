@@ -249,7 +249,8 @@ async function runStream(url, body, { sidecar = 'python' } = {}) {
 }
 
 // Viewer --------------------------------------------------------------------
-async function openViewerForSeries(studyIdx, seriesIdx) {
+async function openViewerForSeries(studyIdx, seriesIdx, opts = {}) {
+  const { trimOnly = false } = opts;
   const st = studyMeta?.studies?.[studyIdx];
   const se = st?.series?.[seriesIdx];
   if (!se?.folder) return;
@@ -257,18 +258,27 @@ async function openViewerForSeries(studyIdx, seriesIdx) {
     write('viewer bundle not loaded');
     return;
   }
-  viewerContext = { studyIdx, seriesIdx, folder: se.folder };
+  viewerContext = { studyIdx, seriesIdx, folder: se.folder, trimOnly };
   viewerState = null;
-  viewerTitle.textContent = se.description || `Series ${seriesIdx + 1}`;
+  viewerTitle.textContent = trimOnly
+    ? `Trim — ${se.description || `Series ${seriesIdx + 1}`}`
+    : (se.description || `Series ${seriesIdx + 1}`);
   viewerHint.textContent = 'scroll page · drag W/L · middle pan · right zoom · A/C/S orient · [/] thickness ±1mm · ⇧[/] spacing ±1mm · space reset';
   viewerSection.hidden = false;
+  viewerSection.classList.toggle('trim-only', trimOnly);
   await setupTrim(se);
   viewerSection.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   try {
     await window.viewerAPI.open(se.folder, viewerCanvas, {
+      // Trim operates on source-slice indices — stack mode makes that trivial
+      // (slider tick = file index) and sidesteps the volume-viewport oddities
+      // that made trim feel glitchy.
+      forceStack: trimOnly,
       sliceThickness: se.slice_thickness,
       sliceSpacing: se.slice_spacing,
       orientation: se.orientation,
+      windowCenter: se.window_center,
+      windowWidth:  se.window_width,
     });
   } catch (e) {
     write(`viewer error: ${e.message || e}`);
@@ -372,13 +382,15 @@ btnTrim?.addEventListener('click', async () => {
   setState('processing');
   try {
     await runStream('/trim', { input: folder, output, start: lo, end: hi });
-    await appendNewSeries(output, label, studyIdx);
-    setState('done');
+    // Close the viewer first — Cornerstone's image cache still holds
+    // references to the pre-trim stack; reopening on the new folder while
+    // the cache is live was only loading the first few slices.
+    closeViewer();
+    // Rescan the root so studyMeta matches what the next click on the
+    // new thumbnail will get — appendNewSeries alone leaves the summary
+    // slightly out of sync with a full scan.
+    if (anonOutput) await loadFolder(anonOutput);
     write(`trimmed ${label}`);
-    // Reload the viewer on the freshly trimmed series.
-    const st = studyMeta?.studies?.[studyIdx];
-    const newIdx = st?.series?.length ? st.series.length - 1 : -1;
-    if (newIdx >= 0) await openViewerForSeries(studyIdx, newIdx);
   } catch (e) {
     write(`trim failed: ${e.message || e}`);
     setState('done');
@@ -392,6 +404,7 @@ function closeViewer() {
   viewerStatus.innerHTML = '';
   viewerTrim.hidden = true;
   viewerSection.hidden = true;
+  viewerSection.classList.remove('trim-only');
   viewerContext = null;
   viewerState = null;
 }
@@ -490,9 +503,10 @@ document.addEventListener('viewer:state', (e) => {
   const { isVolume, orientation, slabThickness, slabSpacing,
           sourceThickness, sourceSpacing, trimApplicable, isAtNative,
           center, width } = e.detail;
-  // Trim is a source-slice operation; only meaningful in stack mode or in
-  // the acquisition orientation at native thickness/spacing. Hide otherwise.
-  if (trimCount >= 2) viewerTrim.hidden = !trimApplicable;
+  // Trim slider is only for trim-only mode (opened via the scissors
+  // button on the thumbnail). Hidden during normal viewing.
+  const showTrim = !!viewerContext?.trimOnly && trimCount >= 2 && trimApplicable;
+  viewerTrim.hidden = !showTrim;
   updateTrimButtonState();
   const bits = [];
   if (isVolume) {
@@ -605,6 +619,20 @@ function renderStudySummary() {
             void deleteSeries(si, i);
           });
           li.appendChild(del);
+        }
+
+        if (se.folder && se.slice_count >= 2) {
+          const trimBtn = document.createElement('button');
+          trimBtn.className = 'series-trim-btn';
+          trimBtn.type = 'button';
+          trimBtn.title = 'Trim this series';
+          trimBtn.setAttribute('aria-label', 'Trim series');
+          trimBtn.textContent = '✂'; // scissors
+          trimBtn.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            void openViewerForSeries(si, i, { trimOnly: true });
+          });
+          li.appendChild(trimBtn);
         }
 
         const desc = document.createElement('div');
@@ -790,6 +818,8 @@ async function appendNewSeries(folder, label, studyIdx) {
       transfer_syntax: info.transfer_syntax,
       folder: info.folder,
       thumbnail: info.thumbnail,
+      window_center: info.window_center,
+      window_width:  info.window_width,
       operation: label,
     });
     if (info.total_bytes) st.total_bytes = (st.total_bytes || 0) + info.total_bytes;

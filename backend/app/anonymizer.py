@@ -187,6 +187,18 @@ def _safe_float(v):
         return None
 
 
+def _first_num(v):
+    """Window Center/Width can be multi-valued — take the first number."""
+    if v is None:
+        return None
+    try:
+        if hasattr(v, '__iter__') and not isinstance(v, (str, bytes)):
+            v = next(iter(v), None)
+        return float(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 def iter_scrub_folder(input_dir: Path, output_dir: Path, *, summary_out: dict | None = None):
     """Yield per-file results as they're processed. Per-file failures are
     yielded rather than raised. UIDs are remapped consistently across the
@@ -361,6 +373,8 @@ def scan_folder(input_dir: Path) -> dict:
                 'slice_count': 0,
                 'total_bytes': 0,
                 'transfer_syntax': _ts_info(ds),
+                'window_center': _first_num(ds.get('WindowCenter', None)),
+                'window_width':  _first_num(ds.get('WindowWidth',  None)),
             }
             # Unit normal to the slice plane, reused for all slices in this series.
             series_normal[orig_series] = _slice_normal(iop)

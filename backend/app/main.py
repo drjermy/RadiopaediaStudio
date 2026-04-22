@@ -239,6 +239,21 @@ def series_info(req: SeriesInfoRequest) -> dict:
         except Exception:
             pass
 
+    # First-slice window center/width — cornerstone's volume viewport doesn't
+    # reliably pick these up during streaming load, so we pass them through
+    # and apply explicitly once the first slice has rendered.
+    def _first_num(attr):
+        v = _tag(first, attr)
+        if v is None:
+            return None
+        # DICOM allows multi-value; take the first.
+        try:
+            if hasattr(v, '__iter__') and not isinstance(v, str):
+                v = next(iter(v), None)
+            return float(v) if v is not None else None
+        except (TypeError, ValueError):
+            return None
+
     return {
         'folder': str(folder),
         'description': desc,
@@ -250,6 +265,8 @@ def series_info(req: SeriesInfoRequest) -> dict:
         'total_bytes': total_bytes,
         'transfer_syntax': ts_info,
         'thumbnail': thumb,
+        'window_center': _first_num('WindowCenter'),
+        'window_width':  _first_num('WindowWidth'),
     }
 
 

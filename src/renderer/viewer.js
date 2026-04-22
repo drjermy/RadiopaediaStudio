@@ -36,6 +36,8 @@ let slabSpacing = 1;          // mm, current scroll step (denominator)
 let sourceThickness = null;   // SliceThickness from acquisition, mm
 let sourceSpacing = null;     // computed slice spacing along normal, mm
 let sourceOrientation = null; // 'axial' | 'coronal' | 'sagittal' — acquisition plane
+let pendingWindowCenter = null;
+let pendingWindowWidth  = null;
 let currentVolumeId = null;   // unique per-open so we never reuse a cached
                               // volume actor that was bound to a destroyed engine
 
@@ -198,10 +200,13 @@ async function loadStack(folder) {
 }
 
 async function open(folder, container, opts = {}) {
-  const { forceStack = false, sliceThickness = null, sliceSpacing = null, orientation = null } = opts;
+  const { forceStack = false, sliceThickness = null, sliceSpacing = null,
+          orientation = null, windowCenter = null, windowWidth = null } = opts;
   sourceThickness = Number.isFinite(sliceThickness) ? sliceThickness : null;
   sourceSpacing = Number.isFinite(sliceSpacing) ? sliceSpacing : null;
   sourceOrientation = orientation || null;
+  pendingWindowCenter = Number.isFinite(windowCenter) ? windowCenter : null;
+  pendingWindowWidth  = Number.isFinite(windowWidth)  ? windowWidth  : null;
   await ensureInitialized();
 
   // Tear down the previous session cleanly. Without removing the viewport
@@ -323,6 +328,26 @@ async function open(folder, container, opts = {}) {
   element.addEventListener(
     cornerstone.Enums.Events.IMAGE_RENDERED,
     () => {
+      // Apply the series' DICOM-declared Window Center/Width explicitly.
+      // Cornerstone's volume viewport defaults to an auto-fit VOI (full
+      // pixel range) during streaming load and often doesn't pick up
+      // WindowCenter/WindowWidth for fresh files (e.g. a just-trimmed
+      // series), which rendered a washed-out -3352/9688 instead of the
+      // 45/415 the thumbnail showed.
+      if (pendingWindowCenter != null && pendingWindowWidth != null && pendingWindowWidth > 0) {
+        try {
+          currentViewport.setProperties?.({
+            voiRange: {
+              lower: pendingWindowCenter - pendingWindowWidth / 2,
+              upper: pendingWindowCenter + pendingWindowWidth / 2,
+            },
+          });
+          currentViewport.render?.();
+        } catch {}
+        initialVOI = { center: pendingWindowCenter, width: pendingWindowWidth };
+        pendingWindowCenter = null;
+        pendingWindowWidth = null;
+      }
       if (currentIsVolume) {
         pickDefaultSlab();
         applySlab();
