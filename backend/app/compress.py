@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pydicom
-from pydicom.uid import JPEG2000, JPEG2000Lossless
+from pydicom.uid import JPEG2000, JPEG2000Lossless, generate_uid
 
 from app.anonymizer import find_dicoms
 
@@ -58,12 +58,31 @@ def compress_file(input_path: Path, output_path: Path, ratio: float | None = Non
 
 def iter_compress_folder(input_dir: Path, output_dir: Path, ratio: float | None = None):
     """Mirror input_dir into output_dir, re-encoding every DICOM as JPEG 2000
-    (lossless if ratio is None, else lossy at the given ratio)."""
+    (lossless if ratio is None, else lossy at the given ratio). A compressed
+    copy is a distinct series, so remap SeriesInstanceUID (consistently per
+    source series) and regenerate every SOPInstanceUID — otherwise scan
+    groups the base and its compressed variants into one series."""
+    series_remap: dict[str, str] = {}
     for src in find_dicoms(input_dir):
         rel = src.relative_to(input_dir)
         dst = output_dir / rel
         try:
-            compress_file(src, dst, ratio=ratio)
+            ds = pydicom.dcmread(src)
+            if 'PixelData' not in ds:
+                raise ValueError(f'no PixelData in {src}')
+            encode_jpeg2000(ds, ratio=ratio)
+            if ratio is not None:
+                _stamp_lossy_tags(ds, ratio)
+            orig_series = str(ds.SeriesInstanceUID) if 'SeriesInstanceUID' in ds else None
+            if orig_series:
+                if orig_series not in series_remap:
+                    series_remap[orig_series] = generate_uid(prefix='2.25.')
+                ds.SeriesInstanceUID = series_remap[orig_series]
+            ds.SOPInstanceUID = generate_uid(prefix='2.25.')
+            if hasattr(ds, 'file_meta'):
+                ds.file_meta.MediaStorageSOPInstanceUID = ds.SOPInstanceUID
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            ds.save_as(dst, enforce_file_format=True)
             yield {'input': str(src), 'output': str(dst)}
         except Exception as e:
             yield {'input': str(src), 'error': f'{type(e).__name__}: {e}'}
