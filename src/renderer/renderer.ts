@@ -1,62 +1,117 @@
+import type {
+  CompressSpec,
+  DeleteSeriesRequest,
+  InspectResponse,
+  ReformatSpec,
+  SeriesInfoRequest,
+  SeriesInfoResponse,
+  SeriesSummary,
+  StreamEvent,
+  StudySummary,
+  SummaryPayload,
+  ThumbnailsRequest,
+  ThumbnailsResponse,
+  TransformRequest,
+  TrimRequest,
+  WindowPresetsResponse,
+  WindowSpec,
+} from '../shared/api';
+import type { ViewerStateDetail } from './globals';
+
 // Elements ------------------------------------------------------------------
-const drop = document.getElementById('drop');
-const btnOpenFolder = document.getElementById('btn-open-folder');
-const panelInspected = document.getElementById('panel-inspected');
-const panelProcessing = document.getElementById('panel-processing');
-const panelDone = document.getElementById('panel-done');
-const viewerSection = document.getElementById('viewer-section');
-const viewerCanvas = document.getElementById('viewer-canvas');
-const viewerTitle = document.getElementById('viewer-title');
-const viewerHint = document.getElementById('viewer-hint');
-const viewerStatus = document.getElementById('viewer-status');
-const btnCloseViewer = document.getElementById('btn-close-viewer');
-const btnSaveViewer = document.getElementById('btn-save-viewer');
-const viewerPresetSelect = document.getElementById('viewer-preset');
-const viewerCompressMode = document.getElementById('viewer-compress-mode');
-const viewerCompressRatio = document.getElementById('viewer-compress-ratio');
-const viewerCompressRatioLabel = document.getElementById('viewer-compress-ratio-label');
-const viewerTrim = document.getElementById('viewer-trim');
-const trimStart = document.getElementById('trim-start');
-const trimEnd = document.getElementById('trim-end');
-const trimFill = document.getElementById('trim-fill');
-const trimLabel = document.getElementById('trim-label');
-const btnTrim = document.getElementById('btn-trim');
-const log = document.getElementById('log');
+// Pull the null-check once via a helper; every element below is present in
+// index.html (required for the renderer to function at all), so any lookup
+// miss is a fatal programming error rather than something to defend against
+// per-call-site.
+function req<T extends HTMLElement>(id: string): T {
+  const el = document.getElementById(id);
+  if (!el) throw new Error(`missing #${id}`);
+  return el as T;
+}
+function opt<T extends HTMLElement>(id: string): T | null {
+  return document.getElementById(id) as T | null;
+}
 
-const inspectedTitle = document.getElementById('inspected-title');
-const inspectedSummary = document.getElementById('inspected-summary');
-const inspectedPath = document.getElementById('inspected-path');
-const processingSummary = document.getElementById('processing-summary');
-const progressBar = document.getElementById('progress-bar');
-const progressLabel = document.getElementById('progress-label');
-const doneTitle = document.getElementById('done-title');
-const btnRevealMain = document.getElementById('btn-reveal-main');
-const dropDetails = document.getElementById('drop-details');
-const dropDetailsBody = document.getElementById('drop-details-body');
-const studySummaryEl = document.getElementById('study-summary');
+const drop = req<HTMLDivElement>('drop');
+const btnOpenFolder = opt<HTMLButtonElement>('btn-open-folder');
+const panelInspected = req<HTMLDivElement>('panel-inspected');
+const panelProcessing = req<HTMLDivElement>('panel-processing');
+const panelDone = req<HTMLDivElement>('panel-done');
+const viewerSection = req<HTMLDivElement>('viewer-section');
+const viewerCanvas = req<HTMLDivElement>('viewer-canvas');
+const viewerTitle = req<HTMLHeadingElement>('viewer-title');
+const viewerHint = req<HTMLDivElement>('viewer-hint');
+const viewerStatus = req<HTMLDivElement>('viewer-status');
+const btnCloseViewer = req<HTMLButtonElement>('btn-close-viewer');
+const btnSaveViewer = req<HTMLButtonElement>('btn-save-viewer');
+const viewerPresetSelect = req<HTMLSelectElement>('viewer-preset');
+const viewerCompressMode = req<HTMLSelectElement>('viewer-compress-mode');
+const viewerCompressRatio = req<HTMLInputElement>('viewer-compress-ratio');
+const viewerCompressRatioLabel = req<HTMLLabelElement>('viewer-compress-ratio-label');
+const viewerTrim = req<HTMLDivElement>('viewer-trim');
+const trimStart = req<HTMLInputElement>('trim-start');
+const trimEnd = req<HTMLInputElement>('trim-end');
+const trimFill = req<HTMLDivElement>('trim-fill');
+const trimLabel = req<HTMLDivElement>('trim-label');
+const btnTrim = opt<HTMLButtonElement>('btn-trim');
+const log = req<HTMLDivElement>('log');
 
-const btnAnonymise = document.getElementById('btn-anonymise');
-const btnCancelInspect = document.getElementById('btn-cancel-inspect');
-const btnReset = document.getElementById('btn-reset');
+const inspectedTitle = req<HTMLHeadingElement>('inspected-title');
+const inspectedSummary = req<HTMLParagraphElement>('inspected-summary');
+const inspectedPath = req<HTMLDivElement>('inspected-path');
+const processingSummary = req<HTMLParagraphElement>('processing-summary');
+const progressBar = req<HTMLProgressElement>('progress-bar');
+const progressLabel = req<HTMLSpanElement>('progress-label');
+const doneTitle = req<HTMLHeadingElement>('done-title');
+const btnRevealMain = req<HTMLButtonElement>('btn-reveal-main');
+const dropDetails = req<HTMLDetailsElement>('drop-details');
+const dropDetailsBody = req<HTMLDivElement>('drop-details-body');
+const studySummaryEl = req<HTMLDivElement>('study-summary');
+
+const btnAnonymise = req<HTMLButtonElement>('btn-anonymise');
+const btnCancelInspect = req<HTMLButtonElement>('btn-cancel-inspect');
+const btnReset = req<HTMLButtonElement>('btn-reset');
+
+// Suppress unused warnings for elements that exist only so we throw early
+// if the HTML drifts out of sync with this file.
+void inspectedTitle; void inspectedSummary; void inspectedPath;
 
 // State ---------------------------------------------------------------------
-let state = 'idle'; // 'idle' | 'inspected' | 'processing' | 'done'
-let pending = null;
-let anonOutput = null;
-let windowPresets = {};
-let studyMeta = null; // { studies: [{ ..., series: [...] }, ...] }
-let viewerContext = null; // { studyIdx, seriesIdx, folder } for Save
-let viewerState = null;   // latest { isVolume, orientation, slabThickness, slabSpacing, center, width }
+type AppState = 'idle' | 'inspected' | 'processing' | 'done';
+
+interface PendingInspect {
+  kind: 'file' | 'folder';
+  name: string;
+  input: string;
+  dicom_count: number;
+  total_bytes: number;
+  output: string;
+}
+
+interface ViewerContext {
+  studyIdx: number;
+  seriesIdx: number;
+  folder: string;
+  trimOnly?: boolean;
+}
+
+let state: AppState = 'idle';
+let pending: PendingInspect | null = null;
+let anonOutput: string | null = null;
+let windowPresets: WindowPresetsResponse = {};
+let studyMeta: SummaryPayload | null = null; // { studies: [{ ..., series: [...] }, ...] }
+let viewerContext: ViewerContext | null = null; // { studyIdx, seriesIdx, folder } for Save
+let viewerState: ViewerStateDetail | null = null; // latest viewer:state detail
 let trimCount = 0;
 
 // Helpers -------------------------------------------------------------------
-function write(msg) {
+function write(msg: string): void {
   const stamp = new Date().toLocaleTimeString();
   log.textContent += `[${stamp}] ${msg}\n`;
   log.scrollTop = log.scrollHeight;
 }
 
-function humanBytes(n) {
+function humanBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   const units = ['KB', 'MB', 'GB'];
   let v = n / 1024;
@@ -67,7 +122,7 @@ function humanBytes(n) {
   return `${n} B`;
 }
 
-function setState(next) {
+function setState(next: AppState): void {
   state = next;
   drop.style.display = next === 'idle' ? '' : 'none';
   if (btnOpenFolder) btnOpenFolder.hidden = next !== 'idle';
@@ -77,14 +132,14 @@ function setState(next) {
   btnReset.hidden = next === 'idle';
 }
 
-function basename(p) {
+function basename(p: string | null | undefined): string {
   if (!p) return '';
   const s = String(p).replace(/\/+$/, '');
   const i = s.lastIndexOf('/');
   return i >= 0 ? s.slice(i + 1) : s;
 }
 
-function appendOutputSuffix(basePath, suffix, kind) {
+function appendOutputSuffix(basePath: string, suffix: string, kind: 'file' | 'folder'): string {
   if (kind === 'folder') {
     return basePath.replace(/\/+$/, '') + '_' + suffix;
   }
@@ -96,13 +151,13 @@ function appendOutputSuffix(basePath, suffix, kind) {
   return parentDir + fname.slice(0, dot) + '_' + suffix + fname.slice(dot);
 }
 
-function deriveAnonPath(inputPath, kind) {
+function deriveAnonPath(inputPath: string, kind: 'file' | 'folder'): string {
   return appendOutputSuffix(inputPath, 'anon', kind);
 }
 
-async function attachThumbnails() {
+async function attachThumbnails(): Promise<void> {
   if (!studyMeta?.studies?.length) return;
-  const folders = [];
+  const folders: string[] = [];
   for (const st of studyMeta.studies) {
     for (const se of st.series || []) {
       if (se.folder) folders.push(se.folder);
@@ -115,10 +170,10 @@ async function attachThumbnails() {
     const res = await fetch(`http://127.0.0.1:${port}/thumbnails`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ folders }),
+      body: JSON.stringify({ folders } satisfies ThumbnailsRequest),
     });
     if (!res.ok) return;
-    const map = await res.json();
+    const map = (await res.json()) as ThumbnailsResponse;
     for (const st of studyMeta.studies) {
       for (const se of st.series || []) {
         if (se.folder && map[se.folder]) se.thumbnail = map[se.folder];
@@ -129,7 +184,11 @@ async function attachThumbnails() {
   }
 }
 
-function renderDropDetails(aggregateDrops, fileCount, kind) {
+function renderDropDetails(
+  aggregateDrops: Map<string, number> | undefined,
+  fileCount: number,
+  kind: 'file' | 'folder',
+): void {
   dropDetailsBody.innerHTML = '';
   if (!aggregateDrops || aggregateDrops.size === 0) {
     const p = document.createElement('div');
@@ -158,7 +217,23 @@ function renderDropDetails(aggregateDrops, fileCount, kind) {
 
 // Streaming runner ----------------------------------------------------------
 // sidecar: 'python' (backend/) for everything; 'node' (backend-js/) for /anonymize.
-async function runStream(url, body, { sidecar = 'python' } = {}) {
+interface RunStreamOpts {
+  sidecar?: 'python' | 'node';
+}
+
+interface StreamResult {
+  aggregateDrops: Map<string, number>;
+  summary?: SummaryPayload;
+  count?: number;
+  error_count?: number;
+  output?: string;
+}
+
+async function runStream(
+  url: string,
+  body: unknown,
+  { sidecar = 'python' }: RunStreamOpts = {},
+): Promise<StreamResult> {
   const getPort = sidecar === 'node' ? window.nodeBackend.getPort : window.backend.getPort;
   const port = await getPort();
   if (!port) throw new Error(`${sidecar} backend not ready`);
@@ -176,17 +251,18 @@ async function runStream(url, body, { sidecar = 'python' } = {}) {
     const err = await res.text();
     throw new Error(`${res.status}: ${err}`);
   }
+  if (!res.body) throw new Error('no response body');
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder('utf-8');
   let buffer = '';
   let done = 0;
   let total = 0;
-  const aggregateDrops = new Map();
-  let final = null;
+  const aggregateDrops = new Map<string, number>();
+  let final: Partial<StreamResult> = {};
 
-  const consume = (line) => {
-    const evt = JSON.parse(line);
+  const consume = (line: string): void => {
+    const evt = JSON.parse(line) as StreamEvent;
     switch (evt.type) {
       case 'start':
         total = evt.total || 0;
@@ -226,10 +302,15 @@ async function runStream(url, body, { sidecar = 'python' } = {}) {
         break;
       case 'summary':
         // collected metadata emitted between the last 'file' and 'done'
-        final = { ...(final || {}), summary: { studies: evt.studies } };
+        final = { ...final, summary: { studies: evt.studies } };
         break;
       case 'done':
-        final = { ...(final || {}), ...evt };
+        final = {
+          ...final,
+          count: evt.count,
+          error_count: evt.error_count,
+          output: evt.output,
+        };
         break;
     }
   };
@@ -238,7 +319,7 @@ async function runStream(url, body, { sidecar = 'python' } = {}) {
     const { value, done: streamDone } = await reader.read();
     if (streamDone) break;
     buffer += decoder.decode(value, { stream: true });
-    let idx;
+    let idx: number;
     while ((idx = buffer.indexOf('\n')) >= 0) {
       const line = buffer.slice(0, idx).trim();
       buffer = buffer.slice(idx + 1);
@@ -246,11 +327,19 @@ async function runStream(url, body, { sidecar = 'python' } = {}) {
     }
   }
   if (buffer.trim()) consume(buffer.trim());
-  return { ...(final || {}), aggregateDrops };
+  return { ...final, aggregateDrops };
 }
 
 // Viewer --------------------------------------------------------------------
-async function openViewerForSeries(studyIdx, seriesIdx, opts = {}) {
+interface OpenViewerOpts {
+  trimOnly?: boolean;
+}
+
+async function openViewerForSeries(
+  studyIdx: number,
+  seriesIdx: number,
+  opts: OpenViewerOpts = {},
+): Promise<void> {
   const { trimOnly = false } = opts;
   const st = studyMeta?.studies?.[studyIdx];
   const se = st?.series?.[seriesIdx];
@@ -283,12 +372,12 @@ async function openViewerForSeries(studyIdx, seriesIdx, opts = {}) {
       windowWidth:  se.window_width,
     });
   } catch (e) {
-    write(`viewer error: ${e.message || e}`);
+    write(`viewer error: ${(e as Error).message || e}`);
     closeViewer();
   }
 }
 
-async function setupTrim(series) {
+async function setupTrim(series: SeriesSummary | undefined): Promise<void> {
   // Only show trim on multi-slice series.
   if (!series?.slice_count || series.slice_count < 2) {
     trimCount = 0;
@@ -304,7 +393,7 @@ async function setupTrim(series) {
   // orientation + native), so don't unhide here.
 }
 
-function currentTrim() {
+function currentTrim(): { start: number; end: number } | null {
   if (viewerTrim.hidden || !trimCount) return null;
   const start = parseInt(trimStart.value, 10) || 0;
   const end = parseInt(trimEnd.value, 10) || 0;
@@ -312,7 +401,7 @@ function currentTrim() {
   return { start, end };
 }
 
-function updateTrimUI() {
+function updateTrimUI(): void {
   const s = parseInt(trimStart.value, 10) || 0;
   const e = parseInt(trimEnd.value, 10) || 0;
   // Enforce start ≤ end
@@ -340,7 +429,7 @@ function updateTrimUI() {
 // Trim only makes sense when slider indices correspond to source slice
 // indices — stack mode always, volume mode only when we're in the
 // acquisition orientation at native thickness/spacing.
-function updateTrimButtonState() {
+function updateTrimButtonState(): void {
   if (!btnTrim) return;
   const lo = parseInt(trimStart.value, 10);
   const hi = parseInt(trimEnd.value, 10);
@@ -351,7 +440,7 @@ function updateTrimButtonState() {
   btnTrim.disabled = !moved || !indicesAreSourceSlices || !viewerContext?.folder;
 }
 
-function pushTrimRangeToViewer() {
+function pushTrimRangeToViewer(): void {
   const lo = parseInt(trimStart.value, 10);
   const hi = parseInt(trimEnd.value, 10);
   // Only constrain the viewer when the user has actually moved off the
@@ -372,18 +461,23 @@ trimEnd.addEventListener('input', () => {
 });
 
 btnTrim?.addEventListener('click', async () => {
-  if (btnTrim.disabled || !viewerContext?.folder || viewerContext.studyIdx == null) return;
+  if (!btnTrim || btnTrim.disabled || !viewerContext?.folder || viewerContext.studyIdx == null) return;
   const lo = parseInt(trimStart.value, 10);
   const hi = parseInt(trimEnd.value, 10);
   if (!(hi > lo)) return;
   const { folder, studyIdx } = viewerContext;
+  // `studyIdx` is destructured for parity with the JS original (may be used
+  // by future code); reference it once to keep TS noUnusedLocals quiet if
+  // that flag is ever enabled.
+  void studyIdx;
   const label = `trim-${lo + 1}-${hi + 1}`;
   const output = appendOutputSuffix(folder, label, 'folder');
   btnTrim.disabled = true;
   processingSummary.textContent = `Trimming → ${basename(output)}`;
   setState('processing');
   try {
-    await runStream('/trim', { input: folder, output, start: lo, end: hi });
+    const trimReq: TrimRequest = { input: folder, output, start: lo, end: hi };
+    await runStream('/trim', trimReq);
     // Close the viewer first — Cornerstone's image cache still holds
     // references to the pre-trim stack; reopening on the new folder while
     // the cache is live was only loading the first few slices.
@@ -394,13 +488,13 @@ btnTrim?.addEventListener('click', async () => {
     if (anonOutput) await loadFolder(anonOutput);
     write(`trimmed ${label}`);
   } catch (e) {
-    write(`trim failed: ${e.message || e}`);
+    write(`trim failed: ${(e as Error).message || e}`);
     setState('done');
     updateTrimButtonState();
   }
 });
 
-function closeViewer() {
+function closeViewer(): void {
   if (window.viewerAPI?.close) window.viewerAPI.close();
   viewerCanvas.innerHTML = '';
   viewerStatus.innerHTML = '';
@@ -414,9 +508,9 @@ function closeViewer() {
 
 // Drive the thumbnail's .active class from viewerContext. Cheaper than
 // a full renderStudySummary rebuild.
-function refreshActiveThumbnail() {
+function refreshActiveThumbnail(): void {
   const active = viewerContext;
-  for (const li of studySummaryEl.querySelectorAll('.series-list li')) {
+  for (const li of Array.from(studySummaryEl.querySelectorAll<HTMLLIElement>('.series-list li'))) {
     const match = active
       && String(active.studyIdx)  === li.dataset.studyIdx
       && String(active.seriesIdx) === li.dataset.seriesIdx;
@@ -424,13 +518,17 @@ function refreshActiveThumbnail() {
   }
 }
 
-async function saveViewerAsVersion() {
+async function saveViewerAsVersion(): Promise<void> {
   if (!viewerContext || !viewerState) return;
   const { studyIdx, folder } = viewerContext;
   const { isVolume, orientation, slabThickness, slabSpacing, center, width } = viewerState;
 
-  const spec = {};
-  const suffixParts = [];
+  const spec: {
+    reformat?: ReformatSpec;
+    window?: WindowSpec;
+    compress?: CompressSpec;
+  } = {};
+  const suffixParts: string[] = [];
   // Only include a reformat if the user actually moved off the native
   // defaults. Otherwise saving from a CT opened axial at native thickness
   // would produce a meaningless "same series, new UIDs" reformat — and
@@ -479,22 +577,25 @@ async function saveViewerAsVersion() {
   try {
     if (trim && !spec.reformat && !spec.window && !spec.compress) {
       // Trim only — fast path via /trim (copy subset with fresh UIDs)
-      await runStream('/trim', {
+      const trimReq: TrimRequest = {
         input: folder, output, start: trim.start, end: trim.end,
-      });
+      };
+      await runStream('/trim', trimReq);
     } else if (trim) {
       // Combining trim with other ops isn't supported yet — fall through
       // to /transform with the other ops and drop the trim, with a warning.
       write('note: trim is not combined with other ops yet — saved without trim');
-      await runStream('/transform', { input: folder, output, ...spec });
+      const tReq: TransformRequest = { input: folder, output, ...spec };
+      await runStream('/transform', tReq);
     } else {
-      await runStream('/transform', { input: folder, output, ...spec });
+      const tReq: TransformRequest = { input: folder, output, ...spec };
+      await runStream('/transform', tReq);
     }
     await appendNewSeries(output, suffix, studyIdx);
     setState('done');
     write(`saved ${suffix}`);
   } catch (e) {
-    write(`save failed: ${e.message || e}`);
+    write(`save failed: ${(e as Error).message || e}`);
     setState('done');
   }
 }
@@ -502,13 +603,16 @@ async function saveViewerAsVersion() {
 btnCloseViewer.addEventListener('click', closeViewer);
 btnSaveViewer.addEventListener('click', saveViewerAsVersion);
 
-function fmtMm(mm) {
+function fmtMm(mm: number): string {
   return (Math.round(mm * 10) / 10).toString().replace(/\.0$/, '');
 }
 
 // Always show thickness/spacing as the slash form ("3/3 mm", "5/2 mm").
 // Append "(native)" when both are at the per-orientation floor.
-function thicknessLabel({ slabThickness, slabSpacing, isAtNative }) {
+function thicknessLabel(
+  { slabThickness, slabSpacing, isAtNative }:
+  { slabThickness: number; slabSpacing: number; isAtNative: boolean },
+): string {
   const base = `${fmtMm(slabThickness)}/${fmtMm(slabSpacing)} mm`;
   return isAtNative ? `${base} (native)` : base;
 }
@@ -523,7 +627,7 @@ document.addEventListener('viewer:state', (e) => {
   const showTrim = !!viewerContext?.trimOnly && trimCount >= 2 && trimApplicable;
   viewerTrim.hidden = !showTrim;
   updateTrimButtonState();
-  const bits = [];
+  const bits: string[] = [];
   if (isVolume) {
     if (orientation) bits.push(`<span class="k">View</span><span class="v">${orientation}</span>`);
     if (slabThickness != null && slabSpacing != null) {
@@ -544,12 +648,15 @@ document.addEventListener('viewer:state', (e) => {
   viewerStatus.innerHTML = bits.map((b) => `<span>${b}</span>`).join('');
 });
 
-function setStudyCollapsed(studyIdx, collapsed) {
-  const block = studySummaryEl.querySelector(`.study-block[data-study-idx="${studyIdx}"]`);
+function setStudyCollapsed(studyIdx: number, collapsed: boolean): void {
+  const block = studySummaryEl.querySelector<HTMLDivElement>(
+    `.study-block[data-study-idx="${studyIdx}"]`,
+  );
   if (block) block.classList.toggle('collapsed', collapsed);
 }
+void setStudyCollapsed; // exported implicitly via future use; keeps parity with JS
 
-function renderStudySummary() {
+function renderStudySummary(): void {
   studySummaryEl.innerHTML = '';
   if (!studyMeta?.studies?.length) {
     studySummaryEl.hidden = true;
@@ -558,18 +665,18 @@ function renderStudySummary() {
   studySummaryEl.hidden = false;
 
   for (let si = 0; si < studyMeta.studies.length; si++) {
-    const st = studyMeta.studies[si];
+    const st: StudySummary = studyMeta.studies[si];
     const block = document.createElement('div');
     block.className = 'study-block';
     block.dataset.studyIdx = String(si);
 
-    const headParts = [];
+    const headParts: string[] = [];
     if (st.modality) headParts.push(st.modality);
     if (st.body_part) headParts.push(st.body_part);
     if (st.description) headParts.push(st.description);
     const headerText = headParts.join(' · ') || `Study ${si + 1}`;
 
-    const metaBits = [];
+    const metaBits: string[] = [];
     if (st.study_date) metaBits.push(st.study_date);
     metaBits.push(`${st.series_count} series`);
     metaBits.push(`${st.total_slices} slice${st.total_slices === 1 ? '' : 's'}`);
@@ -658,7 +765,7 @@ function renderStudySummary() {
         const desc = document.createElement('div');
         desc.className = 'series-desc';
         desc.textContent = se.description || '(no description)';
-        const tech = [];
+        const tech: string[] = [];
         if (se.modality) tech.push(se.modality);
         if (se.orientation) tech.push(se.orientation);
         if (se.slice_thickness != null) {
@@ -676,7 +783,7 @@ function renderStudySummary() {
         meta.className = 'series-meta';
         meta.textContent = tech.join(' · ');
 
-        const sizeBits = [];
+        const sizeBits: string[] = [];
         if (se.total_bytes != null) {
           sizeBits.push(humanBytes(se.total_bytes));
           if (se.slice_count > 0) {
@@ -711,7 +818,7 @@ function renderStudySummary() {
 }
 
 // Inspect -------------------------------------------------------------------
-async function inspect(inputPath) {
+async function inspect(inputPath: string): Promise<void> {
   const port = await window.backend.getPort();
   if (!port) { write('error: backend not ready'); return; }
   const res = await fetch(`http://127.0.0.1:${port}/inspect`, {
@@ -724,7 +831,7 @@ async function inspect(inputPath) {
     write(`inspect failed ${res.status}: ${body}`);
     return;
   }
-  const info = await res.json();
+  const info = (await res.json()) as InspectResponse;
   if (info.dicom_count === 0) {
     write(`no .dcm files found in ${inputPath}`);
     return;
@@ -737,7 +844,7 @@ async function inspect(inputPath) {
 }
 
 // Anonymise -----------------------------------------------------------------
-async function runAnonymise() {
+async function runAnonymise(): Promise<void> {
   if (!pending) return;
   processingSummary.textContent = pending.kind === 'folder'
     ? `Anonymising & analysing ${pending.dicom_count} files → ${basename(pending.output)}`
@@ -748,7 +855,7 @@ async function runAnonymise() {
     const result = await runStream('/anonymize',
       { input: pending.input, output: pending.output }, { sidecar: 'node' });
 
-    anonOutput = result.output;
+    anonOutput = result.output ?? null;
     studyMeta = result.summary || null;
 
     // Node doesn't render thumbnails — ask Python to do a batch pass on the
@@ -757,21 +864,23 @@ async function runAnonymise() {
 
     renderStudySummary();
 
-    doneTitle.textContent = result.error_count > 0
-      ? `Anonymised — ${result.count} written, ${result.error_count} failed`
-      : `Anonymised — ${result.count} file${result.count === 1 ? '' : 's'} written`;
-    renderDropDetails(result.aggregateDrops, result.count, pending.kind);
+    const count = result.count ?? 0;
+    const errorCount = result.error_count ?? 0;
+    doneTitle.textContent = errorCount > 0
+      ? `Anonymised — ${count} written, ${errorCount} failed`
+      : `Anonymised — ${count} file${count === 1 ? '' : 's'} written`;
+    renderDropDetails(result.aggregateDrops, count, pending.kind);
     setState('done');
     // Remember the anonymised output so Cmd+R reloads it without re-running.
-    persistLastFolder(result.output);
+    if (result.output) persistLastFolder(result.output);
   } catch (e) {
-    write(`error: ${e.message || e}`);
+    write(`error: ${(e as Error).message || e}`);
     setState('inspected');
   }
 }
 
 // Load (read-only) ----------------------------------------------------------
-async function loadFolder(folderPath) {
+async function loadFolder(folderPath: string): Promise<void> {
   const port = await window.backend.getPort();
   if (!port) { write('backend not ready'); return; }
   processingSummary.textContent = `Scanning ${basename(folderPath)}…`;
@@ -783,7 +892,7 @@ async function loadFolder(folderPath) {
       body: JSON.stringify({ input: folderPath }),
     });
     if (!res.ok) throw new Error(await res.text());
-    const summary = await res.json();
+    const summary = (await res.json()) as SummaryPayload;
     studyMeta = summary;
     anonOutput = folderPath;
     renderStudySummary();
@@ -794,54 +903,63 @@ async function loadFolder(folderPath) {
     setState('done');
     persistLastFolder(folderPath);
   } catch (e) {
-    write(`load failed: ${e.message || e}`);
+    write(`load failed: ${(e as Error).message || e}`);
     setState('idle');
   }
 }
 
 const LAST_FOLDER_KEY = 'radiopaedia-studio:last-folder';
 
-function persistLastFolder(folder) {
-  try { sessionStorage.setItem(LAST_FOLDER_KEY, folder); } catch {}
+function persistLastFolder(folder: string): void {
+  try { sessionStorage.setItem(LAST_FOLDER_KEY, folder); } catch { /* ignore */ }
 }
 
-async function restoreLastFolder() {
-  let saved = null;
-  try { saved = sessionStorage.getItem(LAST_FOLDER_KEY); } catch {}
+async function restoreLastFolder(): Promise<void> {
+  let saved: string | null = null;
+  try { saved = sessionStorage.getItem(LAST_FOLDER_KEY); } catch { /* ignore */ }
   if (!saved) return;
   // Soft-reload: if the folder vanished between sessions, loadFolder's
   // /scan call will fail cleanly and we fall back to idle.
   await loadFolder(saved);
 }
 
-async function appendNewSeries(folder, label, studyIdx) {
+async function appendNewSeries(
+  folder: string,
+  label: string,
+  studyIdx: number | null | undefined,
+): Promise<void> {
   if (studyIdx == null || !studyMeta?.studies?.[studyIdx]) return;
   const port = await window.backend.getPort();
   if (!port) return;
   try {
+    const infoReq: SeriesInfoRequest = { folder, label };
     const res = await fetch(`http://127.0.0.1:${port}/series-info`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ folder, label }),
+      body: JSON.stringify(infoReq),
     });
     if (!res.ok) return;
-    const info = await res.json();
+    const info = (await res.json()) as SeriesInfoResponse;
     const st = studyMeta.studies[studyIdx];
-    st.series.push({
+    // /series-info's response is a partial SeriesSummary (some fields only
+    // exist once the file has been scrubbed) — coerce to the full shape
+    // with sensible defaults for anything missing.
+    const next: SeriesSummary = {
       description: info.description || label,
-      modality: info.modality,
-      orientation: info.orientation,
-      slice_thickness: info.slice_thickness,
-      slice_spacing: info.slice_spacing,
+      modality: info.modality ?? null,
+      orientation: info.orientation ?? null,
+      slice_thickness: info.slice_thickness ?? null,
+      slice_spacing: info.slice_spacing ?? null,
       slice_count: info.slice_count,
       total_bytes: info.total_bytes,
-      transfer_syntax: info.transfer_syntax,
+      transfer_syntax: info.transfer_syntax ?? { uid: null, name: null, compressed: false, lossy: false },
       folder: info.folder,
       thumbnail: info.thumbnail,
       window_center: info.window_center,
       window_width:  info.window_width,
       operation: label,
-    });
+    };
+    st.series.push(next);
     if (info.total_bytes) st.total_bytes = (st.total_bytes || 0) + info.total_bytes;
     st.series_count = st.series.length;
     st.total_slices = (st.total_slices || 0) + (info.slice_count || 0);
@@ -851,10 +969,10 @@ async function appendNewSeries(folder, label, studyIdx) {
   }
 }
 
-async function deleteSeries(studyIdx, seriesIdx) {
+async function deleteSeries(studyIdx: number, seriesIdx: number): Promise<void> {
   const st = studyMeta?.studies?.[studyIdx];
   const se = st?.series?.[seriesIdx];
-  if (!se?.folder) return;
+  if (!st || !se?.folder) return;
   const label = se.description || `Series ${seriesIdx + 1}`;
   if (!confirm(`Delete "${label}" and its ${se.slice_count ?? '?'} files from disk?\n\n${se.folder}`)) return;
   // Close viewer first if it's showing the series we're about to delete —
@@ -864,10 +982,11 @@ async function deleteSeries(studyIdx, seriesIdx) {
   if (!port) { write('backend not ready'); return; }
   if (!anonOutput) { write('no anonymise root known; refusing to delete'); return; }
   try {
+    const delReq: DeleteSeriesRequest = { folder: se.folder, allowed_parent: anonOutput };
     const res = await fetch(`http://127.0.0.1:${port}/delete-series`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ folder: se.folder, allowed_parent: anonOutput }),
+      body: JSON.stringify(delReq),
     });
     if (!res.ok) throw new Error(await res.text());
     // Mutate the study summary and re-render.
@@ -878,16 +997,16 @@ async function deleteSeries(studyIdx, seriesIdx) {
     renderStudySummary();
     write(`deleted ${label}`);
   } catch (e) {
-    write(`delete failed: ${e.message || e}`);
+    write(`delete failed: ${(e as Error).message || e}`);
   }
 }
 
-async function loadPresets() {
+async function loadPresets(): Promise<void> {
   const port = await window.backend.getPort();
   if (!port) return;
   const res = await fetch(`http://127.0.0.1:${port}/window/presets`);
   if (!res.ok) return;
-  windowPresets = await res.json();
+  windowPresets = (await res.json()) as WindowPresetsResponse;
   for (const name of Object.keys(windowPresets)) {
     const p = windowPresets[name];
     const opt = document.createElement('option');
@@ -915,18 +1034,18 @@ viewerPresetSelect.addEventListener('change', () => {
 });
 
 // Drop handling -------------------------------------------------------------
-function bindDropZone(zone, onDrop) {
-  ['dragenter', 'dragover'].forEach((evt) =>
+function bindDropZone(zone: HTMLElement, onDrop: (p: string) => void): void {
+  (['dragenter', 'dragover'] as const).forEach((evt) =>
     zone.addEventListener(evt, (e) => {
       e.preventDefault();
       zone.classList.add('hover');
-    })
+    }),
   );
-  ['dragleave', 'drop'].forEach((evt) =>
+  (['dragleave', 'drop'] as const).forEach((evt) =>
     zone.addEventListener(evt, (e) => {
       e.preventDefault();
       zone.classList.remove('hover');
-    })
+    }),
   );
   zone.addEventListener('drop', (e) => {
     if (state !== 'idle') return;
@@ -960,7 +1079,7 @@ btnReset.addEventListener('click', () => {
   dropDetailsBody.innerHTML = '';
   renderStudySummary();
   log.textContent = '';
-  try { sessionStorage.removeItem(LAST_FOLDER_KEY); } catch {}
+  try { sessionStorage.removeItem(LAST_FOLDER_KEY); } catch { /* ignore */ }
   setState('idle');
 });
 

@@ -22,3 +22,11 @@ backend/dist/
 src/renderer/viewer.bundle.js
 src/renderer/*.wasm
 src/renderer/decodeImageFrameWorker.js
+
+# Compiled renderer output (produced by `tsc -p tsconfig.renderer.json`,
+# colocated with index.html for the same reason).
+src/renderer/renderer.js
+src/renderer/renderer.js.map
+# api.ts is types-only; tsc still emits empty JS siblings we don't ship.
+src/shared/api.js
+src/shared/api.js.map
