@@ -20,6 +20,8 @@ import pydicom
 from pydicom.dataset import Dataset, FileMetaDataset
 from pydicom.uid import ExplicitVRLittleEndian, generate_uid
 
+from app.logsafe import redact_error_message
+
 
 ORIENTATIONS = ('axial', 'coronal', 'sagittal')
 MODES = ('mip', 'minip', 'avg')
@@ -302,4 +304,4 @@ def iter_reformat_series(input_dir: Path, output_dir: Path, orientation: str,
         ):
             yield {'type': 'file', 'output': str(written_path)}
     except Exception as e:
-        yield {'type': 'error', 'error': f'{type(e).__name__}: {e}'}
+        yield {'type': 'error', 'error': redact_error_message(f'{type(e).__name__}: {e}')}

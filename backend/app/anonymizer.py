@@ -26,7 +26,7 @@ from app.classify import (
     median_spacing as _median_spacing,
     slice_normal as _slice_normal,
 )
-from app.logsafe import redact_path
+from app.logsafe import redact_error_message, redact_path
 
 __all__ = [
     'KEEP_TAGS',
@@ -293,7 +293,7 @@ def iter_scrub_folder(input_dir: Path, output_dir: Path, *, summary_out: dict | 
                 'dropped_tags': dropped,
             }
         except Exception as e:
-            yield {'input': redact_path(src), 'error': f'{type(e).__name__}: {e}'}
+            yield {'input': redact_path(src), 'error': redact_error_message(f'{type(e).__name__}: {e}')}
 
     if summary_out is not None:
         from app.thumbnails import make_thumbnail

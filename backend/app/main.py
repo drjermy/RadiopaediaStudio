@@ -23,7 +23,7 @@ from app.classify import (
     slice_normal as _slice_normal,
 )
 from app.compress import iter_compress_folder, iter_recompress_in_place
-from app.logsafe import redact_path
+from app.logsafe import redact_error_message, redact_path
 from app.reformat import MODES as REFORMAT_MODES, ORIENTATIONS, iter_reformat_series
 from app.windowing import (
     PRESETS as WINDOW_PRESETS,
@@ -314,7 +314,7 @@ def anonymize(req: AnonymizeRequest) -> StreamingResponse:
                 yield _line({'type': 'file', 'input': str(in_path), 'output': str(out_path), **info})
                 yield _line({'type': 'done', 'count': 1, 'error_count': 0, 'output': str(out_path)})
             except Exception as e:
-                yield _line({'type': 'error', 'input': redact_path(in_path), 'error': f'{type(e).__name__}: {e}'})
+                yield _line({'type': 'error', 'input': redact_path(in_path), 'error': redact_error_message(f'{type(e).__name__}: {e}')})
                 yield _line({'type': 'done', 'count': 0, 'error_count': 1, 'output': str(out_path)})
         return StreamingResponse(gen_file(), media_type='application/x-ndjson')
 
@@ -354,7 +354,7 @@ def window(req: WindowRequest) -> StreamingResponse:
                 yield _line({'type': 'file', 'input': str(in_path), 'output': str(out_path)})
                 yield _line({'type': 'done', 'count': 1, 'error_count': 0, 'output': str(out_path)})
             except Exception as e:
-                yield _line({'type': 'error', 'input': redact_path(in_path), 'error': f'{type(e).__name__}: {e}'})
+                yield _line({'type': 'error', 'input': redact_path(in_path), 'error': redact_error_message(f'{type(e).__name__}: {e}')})
                 yield _line({'type': 'done', 'count': 0, 'error_count': 1, 'output': str(out_path)})
         return StreamingResponse(gen_file(), media_type='application/x-ndjson')
 
@@ -430,7 +430,7 @@ def trim(req: TrimRequest) -> StreamingResponse:
                 yield _line({'type': 'file', 'input': str(src), 'output': str(dst)})
             except Exception as e:
                 error_count += 1
-                yield _line({'type': 'error', 'input': redact_path(src), 'error': f'{type(e).__name__}: {e}'})
+                yield _line({'type': 'error', 'input': redact_path(src), 'error': redact_error_message(f'{type(e).__name__}: {e}')})
         yield _line({'type': 'done', 'count': count, 'error_count': error_count, 'output': str(out_path)})
 
     return StreamingResponse(gen(), media_type='application/x-ndjson')
@@ -509,7 +509,7 @@ def transform(req: TransformRequest) -> StreamingResponse:
                     count += 1
                 except Exception as e:
                     error_count += 1
-                    yield _line({'type': 'error', 'input': redact_path(in_path), 'error': f'{type(e).__name__}: {e}'})
+                    yield _line({'type': 'error', 'input': redact_path(in_path), 'error': redact_error_message(f'{type(e).__name__}: {e}')})
             else:
                 for result in iter_apply_window_folder(in_path, out_path, w.center, w.width):
                     if 'error' in result:
@@ -537,7 +537,7 @@ def transform(req: TransformRequest) -> StreamingResponse:
                     count += 1
                 except Exception as e:
                     error_count += 1
-                    yield _line({'type': 'error', 'input': redact_path(in_path), 'error': f'{type(e).__name__}: {e}'})
+                    yield _line({'type': 'error', 'input': redact_path(in_path), 'error': redact_error_message(f'{type(e).__name__}: {e}')})
             else:
                 for result in iter_compress_folder(in_path, out_path, ratio=compress_ratio):
                     if 'error' in result:
@@ -587,7 +587,49 @@ def delete_series(req: DeleteSeriesRequest) -> dict:
     return {'deleted': str(folder)}
 
 
+def _install_warning_redactor() -> None:
+    """Route all Python warnings through ``redact_error_message`` before
+    they hit stderr. pydicom emits user warnings that embed the absolute
+    file path verbatim — e.g.
+    ``End of file reached before delimiter (FFFE,E0DD) found in file /abs/path/PATIENT_X/I1.dcm``
+    — and for a local anonymiser destined to be uploaded, those ancestor
+    folder names are PHI. See GitHub issue #11.
+
+    We wrap (don't replace) ``warnings.showwarning`` so the default
+    formatting/filtering behaviour is preserved; we only scrub the
+    message payload. Warnings are still surfaced — just with the path
+    reduced to ``<parent>/<file>``.
+    """
+    import sys
+    import warnings
+
+    original = warnings.showwarning
+
+    def showwarning_redacted(message, category, filename, lineno, file=None, line=None):  # type: ignore[no-untyped-def]
+        try:
+            redacted = redact_error_message(str(message))
+            # Rebuild as the same warning type to preserve category formatting.
+            new_message = category(redacted) if isinstance(message, Warning) or isinstance(message, str) else message
+        except Exception:
+            new_message = message
+        # `filename` is the source file that issued the warning — usually
+        # site-packages, but redact just in case a third-party module
+        # writes warnings from under a PHI-shaped path.
+        try:
+            safe_filename = redact_path(filename) if filename else filename
+        except Exception:
+            safe_filename = filename
+        try:
+            original(new_message, category, safe_filename, lineno, file=file, line=line)
+        except Exception:
+            # Last-resort fallback: don't let a logging hook take down the server.
+            print(f'{category.__name__}: {new_message}', file=file or sys.stderr)
+
+    warnings.showwarning = showwarning_redacted
+
+
 def main() -> None:
+    _install_warning_redactor()
     p = argparse.ArgumentParser()
     p.add_argument('--port', type=int, required=True)
     p.add_argument('--host', default='127.0.0.1')
