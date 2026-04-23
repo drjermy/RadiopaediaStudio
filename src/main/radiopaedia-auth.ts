@@ -20,22 +20,25 @@ import {
   type RadiopaediaTokens,
 } from './credentials';
 import {
+  RADIOPAEDIA_API_BASE,
   RADIOPAEDIA_CLIENT_ID,
   RADIOPAEDIA_CLIENT_SECRET,
 } from './radiopaedia-config';
 import {
   getValidAccessTokenCore,
   parseTokenResponseCore,
-  RADIOPAEDIA_AUTHORIZE_URL as CORE_AUTHORIZE_URL,
-  RADIOPAEDIA_TOKEN_URL as CORE_TOKEN_URL,
   REFRESH_MARGIN_SECONDS as CORE_REFRESH_MARGIN,
   resolveEffectiveClientCredentials,
   type AuthCoreDeps,
   type RadiopaediaTokensCore,
 } from './radiopaedia-auth-core';
 
-export const RADIOPAEDIA_TOKEN_URL = CORE_TOKEN_URL;
-export const RADIOPAEDIA_AUTHORIZE_URL = CORE_AUTHORIZE_URL;
+// URLs are derived from RADIOPAEDIA_API_BASE so dev builds can target the
+// staging site (https://env-develop.radiopaedia-dev.org) by setting
+// RADIOPAEDIA_API_BASE at build time. Prod defaults to radiopaedia.org.
+export const RADIOPAEDIA_TOKEN_URL = `${RADIOPAEDIA_API_BASE}/oauth/token`;
+export const RADIOPAEDIA_AUTHORIZE_URL = `${RADIOPAEDIA_API_BASE}/oauth/authorize`;
+export const RADIOPAEDIA_API_URL = `${RADIOPAEDIA_API_BASE}/api/v1`;
 export const REFRESH_MARGIN_SECONDS = CORE_REFRESH_MARGIN;
 
 /**
@@ -73,6 +76,7 @@ function liveDeps(): AuthCoreDeps {
     setTokens: (t) => setRadiopaediaTokens(t as RadiopaediaTokens),
     clearTokens: clearRadiopaediaTokens,
     getEffectiveClientCredentials,
+    tokenUrl: RADIOPAEDIA_TOKEN_URL,
   };
 }
 

@@ -30,3 +30,9 @@
 export const RADIOPAEDIA_CLIENT_ID = '';
 export const RADIOPAEDIA_CLIENT_SECRET = '';
 export const RADIOPAEDIA_REDIRECT_URI = 'urn:ietf:wg:oauth:2.0:oob';
+
+// Radiopaedia site base URL. Dev/test builds point at the staging site;
+// production builds use `https://radiopaedia.org`. All authorize/token/API
+// URLs are derived from this base in `radiopaedia-auth.ts`. Override via
+// the `RADIOPAEDIA_API_BASE` env var at build time — no trailing slash.
+export const RADIOPAEDIA_API_BASE = 'https://radiopaedia.org';

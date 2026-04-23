@@ -31,12 +31,15 @@ const targetFile = join(mainDir, 'radiopaedia-config.ts');
 const exampleFile = join(mainDir, 'radiopaedia-config.example.ts');
 
 const DEFAULT_REDIRECT_URI = 'urn:ietf:wg:oauth:2.0:oob';
+const DEFAULT_API_BASE = 'https://radiopaedia.org';
 
 const clientId = process.env.RADIOPAEDIA_CLIENT_ID ?? '';
 const clientSecret = process.env.RADIOPAEDIA_CLIENT_SECRET ?? '';
 const redirectUri = process.env.RADIOPAEDIA_REDIRECT_URI ?? DEFAULT_REDIRECT_URI;
+const apiBase = (process.env.RADIOPAEDIA_API_BASE ?? DEFAULT_API_BASE).replace(/\/$/, '');
 
 const haveEnvCreds = clientId !== '' || clientSecret !== '';
+const haveEnvBase = process.env.RADIOPAEDIA_API_BASE != null && process.env.RADIOPAEDIA_API_BASE !== '';
 const fileExists = existsSync(targetFile);
 
 function tsLiteral(s) {
@@ -53,18 +56,20 @@ function writeGenerated() {
     `\n` +
     `export const RADIOPAEDIA_CLIENT_ID = ${tsLiteral(clientId)};\n` +
     `export const RADIOPAEDIA_CLIENT_SECRET = ${tsLiteral(clientSecret)};\n` +
-    `export const RADIOPAEDIA_REDIRECT_URI = ${tsLiteral(redirectUri)};\n`;
+    `export const RADIOPAEDIA_REDIRECT_URI = ${tsLiteral(redirectUri)};\n` +
+    `export const RADIOPAEDIA_API_BASE = ${tsLiteral(apiBase)};\n`;
   writeFileSync(targetFile, body, { mode: 0o600 });
 }
 
-if (haveEnvCreds) {
+if (haveEnvCreds || haveEnvBase) {
   writeGenerated();
-  // Log presence only — never the secret itself.
+  // Log presence only — never the secret itself. api_base is not a secret.
   const idSummary = clientId ? `set (${clientId.length} chars)` : 'unset';
   const secretSummary = clientSecret ? 'set' : 'unset';
   console.log(
     `[write-radiopaedia-config] wrote radiopaedia-config.ts ` +
-      `(client_id ${idSummary}, client_secret ${secretSummary}, redirect_uri ${redirectUri})`,
+      `(client_id ${idSummary}, client_secret ${secretSummary}, ` +
+      `redirect_uri ${redirectUri}, api_base ${apiBase})`,
   );
 } else if (!fileExists) {
   if (!existsSync(exampleFile)) {
