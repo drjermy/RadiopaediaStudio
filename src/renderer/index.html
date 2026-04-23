@@ -689,6 +689,73 @@
       color: #888;
     }
     .case-validation.error { color: #d14; }
+
+    /* Per-series Study form — sits inside each thumbnail card, below the
+       series metadata. Two fields (modality, caption) + a rows=2 findings
+       textarea. Kept compact so the thumbnail grid doesn't blow out. */
+    .series-study {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      width: 100%;
+      margin-top: 4px;
+      padding-top: 6px;
+      border-top: 1px dashed rgba(127, 127, 127, 0.25);
+    }
+    .series-study label {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      font-size: 11px;
+      color: #666;
+    }
+    .series-study select,
+    .series-study input[type="text"],
+    .series-study textarea {
+      font: inherit;
+      font-size: 12px;
+      padding: 3px 6px;
+      border-radius: 4px;
+      border: 1px solid rgba(127, 127, 127, 0.4);
+      background: transparent;
+      color: inherit;
+      box-sizing: border-box;
+      width: 100%;
+    }
+    .series-study textarea {
+      resize: vertical;
+      min-height: 32px;
+      font-family: inherit;
+    }
+    .series-study select.invalid {
+      border-color: #d14;
+    }
+    .series-study .series-study-hint {
+      font-size: 10px;
+      color: #999;
+    }
+    /* Tri-state sex radio — three pills in a row. */
+    .case-radio-group {
+      display: flex;
+      gap: 12px;
+      padding: 4px 0;
+    }
+    .case-radio-group label {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 13px;
+      color: #333;
+      cursor: pointer;
+    }
+    .case-checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      color: #333;
+      padding: 4px 0;
+    }
   </style>
 </head>
 <body>
@@ -792,37 +859,27 @@
 
           <div class="case-row">
             <label class="case-field">
-              <span class="case-label">Modality</span>
-              <select id="case-modality">
-                <option value="">(unspecified)</option>
+              <span class="case-label">System <span class="case-required">*</span></span>
+              <select id="case-system" required>
+                <option value="">(select a system)</option>
               </select>
             </label>
             <label class="case-field">
-              <span class="case-label">Body part</span>
-              <select id="case-body-part">
-                <option value="">(unspecified)</option>
-              </select>
+              <span class="case-label">Patient age</span>
+              <input type="text" id="case-age" placeholder="e.g. 34 years" />
             </label>
-            <label class="case-field">
-              <span class="case-label">Age band</span>
-              <select id="case-age-band">
-                <option value="">(unspecified)</option>
-              </select>
-            </label>
-            <label class="case-field">
+            <div class="case-field">
               <span class="case-label">Sex</span>
-              <select id="case-sex">
-                <option value="">(unspecified)</option>
-                <option value="M">M</option>
-                <option value="F">F</option>
-                <option value="O">Other</option>
-              </select>
-            </label>
+              <div class="case-radio-group" id="case-sex-group">
+                <label><input type="radio" name="case-sex" value="M" /> Male</label>
+                <label><input type="radio" name="case-sex" value="F" /> Female</label>
+                <label><input type="radio" name="case-sex" value="O" /> Other</label>
+              </div>
+            </div>
             <label class="case-field">
-              <span class="case-label">Visibility</span>
-              <select id="case-visibility">
-                <option value="draft">Draft</option>
-                <option value="public">Public</option>
+              <span class="case-label">Diagnostic certainty</span>
+              <select id="case-certainty">
+                <option value="">(unspecified)</option>
               </select>
             </label>
           </div>
@@ -837,25 +894,14 @@
           </label>
 
           <label class="case-field case-field-wide">
-            <span class="case-label">
-              Findings
-              <span class="case-counter" id="case-findings-counter"></span>
-            </span>
-            <textarea id="case-findings" rows="4"
-              placeholder="Imaging findings you want in the case report."></textarea>
-          </label>
-
-          <label class="case-field case-field-wide">
             <span class="case-label">Case discussion</span>
             <textarea id="case-discussion" rows="4"
               placeholder="Discussion, teaching points, differential."></textarea>
           </label>
 
-          <label class="case-field case-field-wide">
-            <span class="case-label">Tags</span>
-            <input type="text" id="case-tags"
-              placeholder="comma-separated, e.g. appendicitis, CT, abdomen" />
-            <span class="case-hint" id="case-tags-hint"></span>
+          <label class="case-checkbox-row">
+            <input type="checkbox" id="case-quiz" />
+            Suitable for quiz
           </label>
 
           <div class="case-actions">

@@ -224,81 +224,102 @@ export interface DeleteSeriesRequest {
 
 // ---------------------------------------------------------------------------
 // Case metadata — the fields a user fills in after anonymisation, before
-// uploading to Radiopaedia. This is the shape a future Radiopaedia API client
-// (#?) will serialise into its request body. Keep form fields idiomatic
-// TypeScript; translate to the wire format at serialise time.
+// uploading to Radiopaedia. Field names match the Radiopaedia API; see
+// `buildCaseCreatePayload` / `buildStudyCreatePayload` below for the exact
+// wire format.
 // ---------------------------------------------------------------------------
 
-/** Max lengths (kept as named constants so UI + future serialiser agree). */
+/** Max lengths (kept as named constants so UI + serialiser agree). */
 export const CASE_TITLE_MAX = 120;
 export const CASE_CLINICAL_HISTORY_MAX = 2000;
-export const CASE_FINDINGS_MAX = 5000;
 
-/** Fixed dropdown vocabularies. Keep ordered; UI renders in-order. */
-export const CASE_MODALITIES = [
-  'CT',
-  'MRI',
-  'X-ray',
-  'US',
-  'NM',
-  'PT',
-  'Mammography',
-  'Fluoroscopy',
-  'Angiography',
-  'Other',
-] as const;
-export type CaseModality = (typeof CASE_MODALITIES)[number];
+/**
+ * Systems vocabulary. IDs come from the Radiopaedia API spec. ID 5
+ * ("Not applicable") is rendered last as a fallback; the other entries stay
+ * in the spec's ascending-ID order because that also happens to read
+ * naturally in a dropdown.
+ */
+export const SYSTEM_OPTIONS = [
+  { id: 1, name: 'Breast' },
+  { id: 2, name: 'Cardiac' },
+  { id: 3, name: 'Central Nervous System' },
+  { id: 4, name: 'Chest' },
+  { id: 6, name: 'Forensic' },
+  { id: 7, name: 'Gastrointestinal' },
+  { id: 8, name: 'Gynaecology' },
+  { id: 9, name: 'Haematology' },
+  { id: 10, name: 'Head & Neck' },
+  { id: 11, name: 'Hepatobiliary' },
+  { id: 12, name: 'Interventional' },
+  { id: 13, name: 'Musculoskeletal' },
+  { id: 14, name: 'Obstetrics' },
+  { id: 15, name: 'Oncology' },
+  { id: 16, name: 'Paediatrics' },
+  { id: 17, name: 'Spine' },
+  { id: 18, name: 'Trauma' },
+  { id: 19, name: 'Urogenital' },
+  { id: 20, name: 'Vascular' },
+  { id: 5, name: 'Not applicable' },
+] as const satisfies ReadonlyArray<{ id: number; name: string }>;
+export type SystemOption = (typeof SYSTEM_OPTIONS)[number];
 
-export const CASE_BODY_PARTS = [
-  'head',
-  'chest',
-  'abdomen',
-  'pelvis',
-  'upper limb',
-  'lower limb',
-  'spine',
-  'musculoskeletal',
-  'cardiovascular',
-  'other',
-] as const;
-export type CaseBodyPart = (typeof CASE_BODY_PARTS)[number];
+/**
+ * Diagnostic certainty vocabulary. IDs straight from the API spec.
+ * "Not applicable" (id 5) last, rest in the spec's natural order.
+ */
+export const DIAGNOSTIC_CERTAINTY_OPTIONS = [
+  { id: 1, name: 'Possible' },
+  { id: 2, name: 'Probable' },
+  { id: 3, name: 'Almost Certain' },
+  { id: 4, name: 'Certain' },
+  { id: 5, name: 'Not applicable' },
+] as const satisfies ReadonlyArray<{ id: number; name: string }>;
+export type DiagnosticCertaintyOption = (typeof DIAGNOSTIC_CERTAINTY_OPTIONS)[number];
 
-export const CASE_AGE_BANDS = [
-  '<1',
-  '1-10',
-  '11-20',
-  '21-30',
-  '31-40',
-  '41-50',
-  '51-60',
-  '61-70',
-  '71-80',
-  '81+',
-  'not specified',
-] as const;
-export type CaseAgeBand = (typeof CASE_AGE_BANDS)[number];
+/**
+ * Modality vocabulary for Study objects. Exactly the 12 strings from the
+ * Radiopaedia API spec — don't rename or translate these; the API matches
+ * literally. IDs are a local-only tag (used as the <option value>) so we
+ * don't have to round-trip the verbatim label through `select.value`.
+ */
+export const MODALITY_OPTIONS = [
+  { id: 1,  name: 'CT' },
+  { id: 2,  name: 'MRI' },
+  { id: 3,  name: 'X-ray' },
+  { id: 4,  name: 'Ultrasound' },
+  { id: 5,  name: 'Mammography' },
+  { id: 6,  name: 'DSA (angiography)' },
+  { id: 7,  name: 'Fluoroscopy' },
+  { id: 8,  name: 'Nuclear medicine' },
+  { id: 9,  name: 'Annotated image' },
+  { id: 10, name: 'Illustration' },
+  { id: 11, name: 'Pathology' },
+  { id: 12, name: 'Photograph' },
+] as const satisfies ReadonlyArray<{ id: number; name: string }>;
+export type ModalityOption = (typeof MODALITY_OPTIONS)[number];
+export type Modality = ModalityOption['name'];
 
 export type CaseSex = 'M' | 'F' | 'O';
-export type CaseVisibility = 'draft' | 'public';
 
+/**
+ * Case — maps to the body of POST /api/v1/cases. UI-level shape; the wire
+ * format (string-serialised, HTML-wrapped) is produced by
+ * buildCaseCreatePayload.
+ */
 export interface Case {
-  // Required.
+  // Required at submit time.
   title: string;                                // 1..CASE_TITLE_MAX chars.
-  visibility: CaseVisibility;                   // defaults to 'draft'.
+  system_id: number | null;                     // from SYSTEM_OPTIONS; required by UI gate.
 
-  // Preferred-but-optional structured fields (picked from fixed lists
-  // above — typed as plain string for forward-compat with new values).
-  body_part: string | null;
-  modality: string | null;
-  patient_age_band: string | null;              // see CASE_AGE_BANDS.
-  patient_sex: CaseSex | null;
+  // Optional structured fields.
+  age: string | null;                           // free-text, e.g. "34 years".
+  patient_sex: CaseSex | null;                  // UI-local tri-state; maps to Male/Female/omit.
+  diagnostic_certainty_id?: number;             // from DIAGNOSTIC_CERTAINTY_OPTIONS.
+  suitable_for_quiz?: boolean;
 
-  // Prose fields. Optional (may be ''), but prompted.
+  // Prose fields (plain text in memory; serialised to HTML).
   clinical_history: string;                     // soft cap CASE_CLINICAL_HISTORY_MAX.
-  findings: string;                             // soft cap CASE_FINDINGS_MAX.
   case_discussion: string;                      // no explicit cap.
-
-  tags: string[];                               // deduped, trimmed, non-empty.
 
   // Derived — NOT shown in the form, filled in at serialise time.
   source_summary: SummaryPayload;
@@ -306,57 +327,170 @@ export interface Case {
 }
 
 /**
+ * Study — one per anonymised series, created under a Case. Maps to the body
+ * of POST /api/v1/cases/:id/studies.
+ */
+export interface Study {
+  modality: Modality;                           // one of MODALITY_OPTIONS.name.
+  findings?: string;                            // plain text in memory; HTML at wire.
+  position?: number;                            // 1 = discussion; first study = 2.
+  caption?: string;                             // plain text.
+}
+
+/**
  * Pre-fill a Case form from the anonymise summary + output folder.
- * Picks modality / body_part from the first study (or the first series with
- * a usable modality) when available. Everything else is left unset so the
- * UI can render its own placeholders / defaults.
+ * Now much thinner: modality and findings belong on Study, not Case.
+ * Title seeds from the first study's description so the user has
+ * something to overwrite.
  */
 export function deriveDefaultCase(
   summary: SummaryPayload,
   outputRoot: string,
 ): Partial<Case> {
   const out: Partial<Case> = {
-    visibility: 'draft',
     source_summary: summary,
     output_root: outputRoot,
   };
   const firstStudy = summary.studies?.[0];
-  if (firstStudy) {
-    const studyModality = firstStudy.modality
-      ?? firstStudy.series?.find((s) => s.modality)?.modality
-      ?? null;
-    if (studyModality) out.modality = studyModality;
-    if (firstStudy.body_part) out.body_part = firstStudy.body_part;
-    if (firstStudy.description) out.title = firstStudy.description.slice(0, CASE_TITLE_MAX);
+  if (firstStudy?.description) {
+    out.title = firstStudy.description.slice(0, CASE_TITLE_MAX);
   }
   return out;
 }
 
 /**
- * Placeholder boundary for the future Radiopaedia API client (#?). The real
- * shape/transport lives in that client — this function just marks the seam
- * between our in-app `Case` and whatever the server wants. Until that client
- * lands, a pass-through object is enough to let callers feel out the API.
- *
- * TODO(#?): replace `Record<string, unknown>` with the generated Radiopaedia
- * client's request type once that lands; drop `source_summary`/`output_root`
- * or fold into multipart upload as appropriate.
+ * Pick the default Study.modality for a series based on its DICOM `modality`
+ * tag. Returns `null` when we can't confidently map (user has to pick).
+ * Mapping is intentionally conservative — only the DICOM codes we
+ * actually see coming out of the anonymiser.
  */
-export function buildCasePayload(c: Case): Record<string, unknown> {
-  return {
-    title: c.title,
-    visibility: c.visibility,
-    body_part: c.body_part,
-    modality: c.modality,
-    patient_age_band: c.patient_age_band,
-    patient_sex: c.patient_sex,
-    clinical_history: c.clinical_history,
-    findings: c.findings,
-    case_discussion: c.case_discussion,
-    tags: c.tags,
-    // Derived — present so the future client can pick out files and
-    // attach DICOMs from the anonymised root.
-    source_summary: c.source_summary,
-    output_root: c.output_root,
+export function defaultModalityForSeries(seriesModality: string | null | undefined): Modality | null {
+  if (!seriesModality) return null;
+  const m = seriesModality.trim().toUpperCase();
+  switch (m) {
+    case 'CT':   return 'CT';
+    case 'MR':
+    case 'MRI':  return 'MRI';
+    case 'CR':
+    case 'DX':
+    case 'RG':
+    case 'XR':
+    case 'X-RAY':
+    case 'XA-PLAIN':
+      return 'X-ray';
+    case 'US':   return 'Ultrasound';
+    case 'MG':   return 'Mammography';
+    case 'XA':   return 'DSA (angiography)';
+    case 'RF':   return 'Fluoroscopy';
+    case 'NM':
+    case 'PT':
+    case 'PET':
+      return 'Nuclear medicine';
+    case 'SC':
+    case 'OT':
+      return 'Annotated image';
+    default:
+      return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// HTML helpers — the Radiopaedia API wants HTML for `body` and `findings`.
+// We collect plain text in the UI and wrap it at serialise time. Keep these
+// exported so both payload builders + any renderer-side preview can use
+// the same escaping path.
+// ---------------------------------------------------------------------------
+
+const HTML_ESCAPE_MAP: Record<string, string> = {
+  '&': '&amp;',
+  '<': '&lt;',
+  '>': '&gt;',
+};
+
+export function escapeHtml(s: string): string {
+  return s.replace(/[&<>]/g, (c) => HTML_ESCAPE_MAP[c] ?? c);
+}
+
+/**
+ * Convert a plain-text blob to HTML:
+ *   - split on blank lines (2+ newlines) into paragraphs,
+ *   - HTML-escape `&<>` in the content,
+ *   - wrap each paragraph in `<p>…</p>`,
+ *   - convert remaining single newlines inside a paragraph to `<br />`.
+ * Returns an empty string for empty/whitespace-only input (so callers can
+ * omit-on-empty cleanly).
+ */
+export function textToHtml(plain: string): string {
+  const trimmed = (plain ?? '').trim();
+  if (!trimmed) return '';
+  return trimmed
+    .split(/\n\s*\n+/)
+    .map((para) => para.trim())
+    .filter((para) => para.length > 0)
+    .map((para) => `<p>${escapeHtml(para).replace(/\n/g, '<br />')}</p>`)
+    .join('');
+}
+
+// ---------------------------------------------------------------------------
+// Payload builders — the wire-format producers for the Radiopaedia API.
+// Both are pure / side-effect-free: they take in-memory shapes and return
+// plain JSON-ready objects. Omit undefined / empty fields rather than
+// sending nulls (the API is happier that way).
+// ---------------------------------------------------------------------------
+
+function setIf<T extends Record<string, unknown>>(
+  dst: T,
+  key: string,
+  value: unknown,
+): void {
+  if (value === undefined || value === null) return;
+  if (typeof value === 'string' && value.length === 0) return;
+  (dst as Record<string, unknown>)[key] = value;
+}
+
+/**
+ * Body for POST /api/v1/cases. `suitable_for_quiz` is kept when explicitly
+ * set (true or false) — users may want to opt out of quiz inclusion. Sex is
+ * mapped: M → Male, F → Female, else omitted.
+ */
+export function buildCaseCreatePayload(c: Case): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  setIf(out, 'title', c.title.trim());
+  if (c.system_id != null) out.system_id = c.system_id;
+  setIf(out, 'age', c.age?.trim() ?? '');
+
+  if (c.patient_sex === 'M') out.gender = 'Male';
+  else if (c.patient_sex === 'F') out.gender = 'Female';
+  // 'O' or null → omit.
+
+  setIf(out, 'presentation', c.clinical_history.trim());
+  const bodyHtml = textToHtml(c.case_discussion);
+  setIf(out, 'body', bodyHtml);
+
+  if (c.diagnostic_certainty_id != null) {
+    out.diagnostic_certainty_id = c.diagnostic_certainty_id;
+  }
+  if (c.suitable_for_quiz !== undefined) {
+    out.suitable_for_quiz = !!c.suitable_for_quiz;
+  }
+  return out;
+}
+
+/**
+ * Body for POST /api/v1/cases/:id/studies. `position` is required (the
+ * caller passes `i + 2` for the i-th study — position 1 is reserved for the
+ * case discussion slot).
+ */
+export function buildStudyCreatePayload(
+  s: Study,
+  position: number,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {
+    modality: s.modality,
+    position,
   };
+  const findingsHtml = textToHtml(s.findings ?? '');
+  setIf(out, 'findings', findingsHtml);
+  setIf(out, 'caption', s.caption?.trim() ?? '');
+  return out;
 }

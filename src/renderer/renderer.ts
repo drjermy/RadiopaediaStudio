@@ -1,15 +1,16 @@
 import type {
   Case,
   CaseSex,
-  CaseVisibility,
   CompressSpec,
   DeleteSeriesRequest,
   InspectResponse,
+  Modality,
   ReformatSpec,
   SeriesInfoRequest,
   SeriesInfoResponse,
   SeriesSummary,
   StreamEvent,
+  Study,
   StudySummary,
   SummaryPayload,
   ThumbnailsRequest,
@@ -20,13 +21,14 @@ import type {
   WindowSpec,
 } from '../shared/api';
 import {
-  CASE_AGE_BANDS,
-  CASE_BODY_PARTS,
   CASE_CLINICAL_HISTORY_MAX,
-  CASE_FINDINGS_MAX,
-  CASE_MODALITIES,
   CASE_TITLE_MAX,
-  buildCasePayload,
+  DIAGNOSTIC_CERTAINTY_OPTIONS,
+  MODALITY_OPTIONS,
+  SYSTEM_OPTIONS,
+  buildCaseCreatePayload,
+  buildStudyCreatePayload,
+  defaultModalityForSeries,
   deriveDefaultCase,
 } from '../shared/api';
 import type { ViewerStateDetail } from './globals';
@@ -91,18 +93,14 @@ const caseDetails = req<HTMLDetailsElement>('case-details');
 const caseForm = req<HTMLFormElement>('case-form');
 const caseTitle = req<HTMLInputElement>('case-title');
 const caseTitleCounter = req<HTMLSpanElement>('case-title-counter');
-const caseModality = req<HTMLSelectElement>('case-modality');
-const caseBodyPart = req<HTMLSelectElement>('case-body-part');
-const caseAgeBand = req<HTMLSelectElement>('case-age-band');
-const caseSex = req<HTMLSelectElement>('case-sex');
-const caseVisibility = req<HTMLSelectElement>('case-visibility');
+const caseSystem = req<HTMLSelectElement>('case-system');
+const caseAge = req<HTMLInputElement>('case-age');
+const caseSexGroup = req<HTMLDivElement>('case-sex-group');
+const caseCertainty = req<HTMLSelectElement>('case-certainty');
+const caseQuiz = req<HTMLInputElement>('case-quiz');
 const caseClinicalHistory = req<HTMLTextAreaElement>('case-clinical-history');
 const caseHistoryCounter = req<HTMLSpanElement>('case-history-counter');
-const caseFindings = req<HTMLTextAreaElement>('case-findings');
-const caseFindingsCounter = req<HTMLSpanElement>('case-findings-counter');
 const caseDiscussion = req<HTMLTextAreaElement>('case-discussion');
-const caseTags = req<HTMLInputElement>('case-tags');
-const caseTagsHint = req<HTMLSpanElement>('case-tags-hint');
 const caseValidation = req<HTMLSpanElement>('case-validation');
 const btnCaseReady = req<HTMLButtonElement>('btn-case-ready');
 
@@ -883,6 +881,12 @@ function renderStudySummary(): void {
           li.appendChild(pill);
         }
 
+        // Per-series Study form (modality + caption + findings). Stops click
+        // propagation so interacting with the form doesn't open the viewer.
+        if (se.folder) {
+          li.appendChild(buildSeriesStudyForm(se));
+        }
+
         ul.appendChild(li);
       }
 
@@ -891,6 +895,87 @@ function renderStudySummary(): void {
     block.appendChild(body);
     studySummaryEl.appendChild(block);
   }
+}
+
+// Per-series Study form ------------------------------------------------------
+// Each thumbnail card carries a small form for the Study fields: modality
+// (required for upload), caption (short label), and a rows=2 findings
+// textarea. Writes go straight into studyByFolder and re-validate the form.
+function buildSeriesStudyForm(se: SeriesSummary): HTMLDivElement {
+  const folder = se.folder!;
+  // Ensure we have a Study object for this folder so the controls have
+  // somewhere to write. Default-pick modality from the DICOM tag where we can.
+  let current = studyByFolder.get(folder);
+  if (!current) {
+    const guess = defaultModalityForSeries(se.modality);
+    current = { modality: (guess ?? '') as Modality };
+    if (guess) studyByFolder.set(folder, current);
+  }
+
+  const wrap = document.createElement('div');
+  wrap.className = 'series-study';
+  // Block clicks from reaching the <li> (which opens the viewer).
+  wrap.addEventListener('click', (ev) => ev.stopPropagation());
+
+  const modLabel = document.createElement('label');
+  modLabel.textContent = 'Modality';
+  const modSelect = document.createElement('select');
+  modSelect.className = 'series-modality';
+  {
+    const blank = document.createElement('option');
+    blank.value = '';
+    blank.textContent = '(pick modality)';
+    modSelect.appendChild(blank);
+  }
+  for (const m of MODALITY_OPTIONS) {
+    const opt = document.createElement('option');
+    opt.value = m.name;
+    opt.textContent = m.name;
+    modSelect.appendChild(opt);
+  }
+  modSelect.value = current.modality || '';
+  modSelect.addEventListener('change', () => {
+    const existing = studyByFolder.get(folder) ?? { modality: '' as Modality };
+    if (modSelect.value) {
+      studyByFolder.set(folder, { ...existing, modality: modSelect.value as Modality });
+    } else {
+      // Selecting "(pick modality)" invalidates the series — keep other
+      // fields but blank the modality so validation trips.
+      studyByFolder.set(folder, { ...existing, modality: '' as Modality });
+    }
+    refreshCaseFormUI();
+    persistCaseDraft();
+  });
+  modLabel.appendChild(modSelect);
+
+  const capLabel = document.createElement('label');
+  capLabel.textContent = 'Caption';
+  const capInput = document.createElement('input');
+  capInput.type = 'text';
+  capInput.placeholder = 'optional caption';
+  capInput.value = current.caption ?? '';
+  capInput.addEventListener('input', () => {
+    const existing = studyByFolder.get(folder) ?? { modality: '' as Modality };
+    studyByFolder.set(folder, { ...existing, caption: capInput.value });
+    persistCaseDraft();
+  });
+  capLabel.appendChild(capInput);
+
+  const findLabel = document.createElement('label');
+  findLabel.textContent = 'Findings';
+  const findArea = document.createElement('textarea');
+  findArea.rows = 2;
+  findArea.placeholder = 'imaging findings (optional)';
+  findArea.value = current.findings ?? '';
+  findArea.addEventListener('input', () => {
+    const existing = studyByFolder.get(folder) ?? { modality: '' as Modality };
+    studyByFolder.set(folder, { ...existing, findings: findArea.value });
+    persistCaseDraft();
+  });
+  findLabel.appendChild(findArea);
+
+  wrap.append(modLabel, capLabel, findLabel);
+  return wrap;
 }
 
 // Inspect -------------------------------------------------------------------
@@ -1050,7 +1135,14 @@ async function appendNewSeries(
     if (info.total_bytes) st.total_bytes = (st.total_bytes || 0) + info.total_bytes;
     st.series_count = st.series.length;
     st.total_slices = (st.total_slices || 0) + (info.slice_count || 0);
+    // Seed a Study entry for the newly-appended derived series so the user
+    // isn't forced to re-pick modality when it can be guessed from the tag.
+    if (next.folder && !studyByFolder.has(next.folder)) {
+      const guess = defaultModalityForSeries(next.modality);
+      if (guess) studyByFolder.set(next.folder, { modality: guess });
+    }
     renderStudySummary();
+    refreshCaseFormUI();
   } catch (e) {
     console.warn('[renderer] series-info fetch failed:', e);
   }
@@ -1081,7 +1173,12 @@ async function deleteSeries(studyIdx: number, seriesIdx: number): Promise<void> 
     st.series_count = st.series.length;
     if (se.total_bytes) st.total_bytes = Math.max(0, (st.total_bytes || 0) - se.total_bytes);
     if (se.slice_count) st.total_slices = Math.max(0, (st.total_slices || 0) - se.slice_count);
+    // Drop the per-series Study state for this folder so it stops gating
+    // the upload button and doesn't round-trip through the draft.
+    if (se.folder) studyByFolder.delete(se.folder);
     renderStudySummary();
+    refreshCaseFormUI();
+    persistCaseDraft();
     write(`deleted ${label}`);
   } catch (e) {
     write(`delete failed: ${(e as Error).message || e}`);
@@ -1189,108 +1286,127 @@ btnRevealMain.addEventListener('click', () => {
 });
 
 // Case metadata form --------------------------------------------------------
-// The form lives inside the Done panel as a <details> block, directly below
-// the study summary (and below the inline viewer when open). The details
-// element opens by default so the user sees the fields as soon as
-// anonymisation finishes — but they can collapse it to get the thumbnails
-// back to full width while flipping through series.
+// The Case form lives in a <details> below the study summary. Per-series
+// Study forms (modality + caption + findings) are inline under each thumbnail
+// — see the renderStudySummary path. We keep Studies in a Map keyed by the
+// series' anonymised folder; the folder is a stable primary key between renders
+// and is the only thing that survives a /scan re-run.
 
 const CASE_DRAFT_KEY = 'radiopaedia-studio:case-draft';
+const CASE_DRAFT_VERSION = 2; // bumped when Case shape changed for #12.
 
 type CaseFormShape = Omit<Case, 'source_summary' | 'output_root'>;
+
+interface CaseDraft {
+  v: number;
+  case: CaseFormShape;
+  studies: Array<[string, Study]>; // [folder, Study]
+}
+
+// Per-series Study state, keyed by the series folder.
+const studyByFolder = new Map<string, Study>();
 
 function emptyCaseForm(): CaseFormShape {
   return {
     title: '',
-    visibility: 'draft',
-    body_part: null,
-    modality: null,
-    patient_age_band: null,
+    system_id: null,
+    age: null,
     patient_sex: null,
     clinical_history: '',
-    findings: '',
     case_discussion: '',
-    tags: [],
   };
 }
 
 // Populate the fixed-list selects exactly once.
 function populateCaseSelects(): void {
-  for (const m of CASE_MODALITIES) {
-    const opt = document.createElement('option');
-    opt.value = m;
-    opt.textContent = m;
-    caseModality.appendChild(opt);
+  for (const opt of SYSTEM_OPTIONS) {
+    const o = document.createElement('option');
+    o.value = String(opt.id);
+    o.textContent = opt.name;
+    caseSystem.appendChild(o);
   }
-  for (const bp of CASE_BODY_PARTS) {
-    const opt = document.createElement('option');
-    opt.value = bp;
-    opt.textContent = bp;
-    caseBodyPart.appendChild(opt);
-  }
-  for (const ab of CASE_AGE_BANDS) {
-    const opt = document.createElement('option');
-    opt.value = ab;
-    opt.textContent = ab;
-    caseAgeBand.appendChild(opt);
+  for (const opt of DIAGNOSTIC_CERTAINTY_OPTIONS) {
+    const o = document.createElement('option');
+    o.value = String(opt.id);
+    o.textContent = opt.name;
+    caseCertainty.appendChild(o);
   }
 }
 
-function parseTags(raw: string): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const part of raw.split(',')) {
-    const t = part.trim();
-    if (!t) continue;
-    const key = t.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(t);
+function readSexRadio(): CaseSex | null {
+  const el = caseSexGroup.querySelector<HTMLInputElement>('input[name="case-sex"]:checked');
+  if (!el) return null;
+  const v = el.value;
+  if (v === 'M' || v === 'F' || v === 'O') return v;
+  return null;
+}
+
+function writeSexRadio(value: CaseSex | null): void {
+  for (const r of caseSexGroup.querySelectorAll<HTMLInputElement>('input[name="case-sex"]')) {
+    r.checked = r.value === value;
   }
-  return out;
 }
 
 function readCaseForm(): CaseFormShape {
-  return {
+  const systemIdStr = caseSystem.value;
+  const systemId = systemIdStr ? parseInt(systemIdStr, 10) : NaN;
+  const certaintyStr = caseCertainty.value;
+  const certaintyId = certaintyStr ? parseInt(certaintyStr, 10) : NaN;
+  const form: CaseFormShape = {
     title: caseTitle.value.trim(),
-    visibility: (caseVisibility.value || 'draft') as CaseVisibility,
-    body_part: caseBodyPart.value || null,
-    modality: caseModality.value || null,
-    patient_age_band: caseAgeBand.value || null,
-    patient_sex: (caseSex.value || null) as CaseSex | null,
+    system_id: Number.isFinite(systemId) ? systemId : null,
+    age: caseAge.value.trim() || null,
+    patient_sex: readSexRadio(),
     clinical_history: caseClinicalHistory.value,
-    findings: caseFindings.value,
     case_discussion: caseDiscussion.value,
-    tags: parseTags(caseTags.value),
   };
+  if (Number.isFinite(certaintyId)) form.diagnostic_certainty_id = certaintyId;
+  if (caseQuiz.checked) form.suitable_for_quiz = true;
+  return form;
 }
 
 function writeCaseForm(data: Partial<CaseFormShape>): void {
   if (data.title !== undefined) caseTitle.value = data.title ?? '';
-  if (data.visibility !== undefined) caseVisibility.value = data.visibility ?? 'draft';
-  if (data.body_part !== undefined) caseBodyPart.value = data.body_part ?? '';
-  if (data.modality !== undefined) caseModality.value = data.modality ?? '';
-  if (data.patient_age_band !== undefined) caseAgeBand.value = data.patient_age_band ?? '';
-  if (data.patient_sex !== undefined) caseSex.value = data.patient_sex ?? '';
+  if (data.system_id !== undefined) {
+    caseSystem.value = data.system_id != null ? String(data.system_id) : '';
+  }
+  if (data.age !== undefined) caseAge.value = data.age ?? '';
+  if (data.patient_sex !== undefined) writeSexRadio(data.patient_sex ?? null);
+  if (data.diagnostic_certainty_id !== undefined) {
+    caseCertainty.value = data.diagnostic_certainty_id != null
+      ? String(data.diagnostic_certainty_id) : '';
+  }
+  if (data.suitable_for_quiz !== undefined) {
+    caseQuiz.checked = !!data.suitable_for_quiz;
+  }
   if (data.clinical_history !== undefined) caseClinicalHistory.value = data.clinical_history ?? '';
-  if (data.findings !== undefined) caseFindings.value = data.findings ?? '';
   if (data.case_discussion !== undefined) caseDiscussion.value = data.case_discussion ?? '';
-  if (data.tags !== undefined) caseTags.value = (data.tags ?? []).join(', ');
 }
 
 function updateCounter(
   el: HTMLSpanElement,
   value: string,
   max: number,
-  hardCap: boolean,
 ): void {
   const len = value.length;
   el.textContent = `${len} / ${max}`;
-  const over = len > max;
-  el.classList.toggle('over', over);
-  // Mark the associated field invalid purely visually for soft caps; hard
-  // caps (like title) still disable the submit.
-  void hardCap;
+  el.classList.toggle('over', len > max);
+}
+
+// Collect every Study we have a form for that corresponds to a series still
+// present in the current summary. Ordered by study-in-summary, then by
+// series-in-study to match how the thumbnails render.
+function collectStudies(): Array<{ folder: string; study: Study }> {
+  const out: Array<{ folder: string; study: Study }> = [];
+  if (!studyMeta?.studies) return out;
+  for (const st of studyMeta.studies) {
+    for (const se of st.series ?? []) {
+      if (!se.folder) continue;
+      const s = studyByFolder.get(se.folder);
+      if (s) out.push({ folder: se.folder, study: s });
+    }
+  }
+  return out;
 }
 
 function validateCaseForm(): { ok: boolean; message: string } {
@@ -1300,35 +1416,64 @@ function validateCaseForm(): { ok: boolean; message: string } {
   if (title.length > CASE_TITLE_MAX) {
     return { ok: false, message: `Title is too long (max ${CASE_TITLE_MAX}).` };
   }
+  const systemId = caseSystem.value ? parseInt(caseSystem.value, 10) : NaN;
+  caseSystem.classList.toggle('invalid', !Number.isFinite(systemId));
+  if (!Number.isFinite(systemId)) return { ok: false, message: 'Pick a system.' };
+
+  // Every series must have a modality picked.
+  const series = (studyMeta?.studies ?? []).flatMap((st) => st.series ?? []).filter((s) => s.folder);
+  if (series.length === 0) {
+    return { ok: false, message: 'No series to upload.' };
+  }
+  for (const se of series) {
+    const s = se.folder ? studyByFolder.get(se.folder) : undefined;
+    if (!s?.modality) {
+      return {
+        ok: false,
+        message: `Pick a modality for "${se.description || 'unnamed series'}".`,
+      };
+    }
+  }
   return { ok: true, message: '' };
 }
 
 function refreshCaseFormUI(): void {
-  updateCounter(caseTitleCounter, caseTitle.value, CASE_TITLE_MAX, true);
-  updateCounter(caseHistoryCounter, caseClinicalHistory.value, CASE_CLINICAL_HISTORY_MAX, false);
-  updateCounter(caseFindingsCounter, caseFindings.value, CASE_FINDINGS_MAX, false);
-  const tags = parseTags(caseTags.value);
-  caseTagsHint.textContent = tags.length
-    ? `${tags.length} tag${tags.length === 1 ? '' : 's'}: ${tags.join(', ')}`
-    : '';
+  updateCounter(caseTitleCounter, caseTitle.value, CASE_TITLE_MAX);
+  updateCounter(caseHistoryCounter, caseClinicalHistory.value, CASE_CLINICAL_HISTORY_MAX);
   const v = validateCaseForm();
   caseValidation.textContent = v.message;
   caseValidation.classList.toggle('error', !v.ok);
   btnCaseReady.disabled = !v.ok;
+  // Reflect per-series validity on any open select.
+  for (const sel of studySummaryEl.querySelectorAll<HTMLSelectElement>('.series-modality')) {
+    sel.classList.toggle('invalid', sel.value === '');
+  }
 }
 
 function persistCaseDraft(): void {
   try {
-    sessionStorage.setItem(CASE_DRAFT_KEY, JSON.stringify(readCaseForm()));
+    const payload: CaseDraft = {
+      v: CASE_DRAFT_VERSION,
+      case: readCaseForm(),
+      studies: Array.from(studyByFolder.entries()),
+    };
+    sessionStorage.setItem(CASE_DRAFT_KEY, JSON.stringify(payload));
   } catch { /* storage full / disabled — drop silently */ }
 }
 
-function restoreCaseDraft(): Partial<CaseFormShape> | null {
+function restoreCaseDraft(): CaseDraft | null {
   try {
     const raw = sessionStorage.getItem(CASE_DRAFT_KEY);
     if (!raw) return null;
-    return JSON.parse(raw) as Partial<CaseFormShape>;
+    const parsed = JSON.parse(raw) as Partial<CaseDraft>;
+    if (!parsed || typeof parsed !== 'object' || parsed.v !== CASE_DRAFT_VERSION) {
+      // Shape mismatch — drop the draft; there's no real user data to migrate.
+      sessionStorage.removeItem(CASE_DRAFT_KEY);
+      return null;
+    }
+    return parsed as CaseDraft;
   } catch {
+    try { sessionStorage.removeItem(CASE_DRAFT_KEY); } catch { /* ignore */ }
     return null;
   }
 }
@@ -1339,6 +1484,7 @@ function clearCaseDraft(): void {
 
 function resetCaseForm(): void {
   writeCaseForm(emptyCaseForm());
+  studyByFolder.clear();
   refreshCaseFormUI();
 }
 
@@ -1354,35 +1500,63 @@ function hydrateCaseForm(summary: SummaryPayload | null, outputRoot: string | nu
   const draft = restoreCaseDraft();
   const current = readCaseForm();
   const hasAnyCurrentInput = !!(
-    current.title || current.clinical_history || current.findings
-    || current.case_discussion || current.tags.length
-    || current.modality || current.body_part || current.patient_age_band
-    || current.patient_sex
+    current.title || current.clinical_history
+    || current.case_discussion
+    || current.system_id != null
+    || current.age || current.patient_sex
   );
 
   // Priority: existing in-memory input > sessionStorage draft > derived.
   const seed: Partial<CaseFormShape> = {
     ...(derived as Partial<CaseFormShape>),
-    ...(draft ?? {}),
+    ...(draft?.case ?? {}),
     ...(hasAnyCurrentInput ? current : {}),
   };
   writeCaseForm(seed);
+
+  // Seed per-series studies for any series we have a draft for, then fill in
+  // the rest by default-picking modality from the series' DICOM modality tag.
+  if (draft?.studies) {
+    for (const [folder, study] of draft.studies) {
+      studyByFolder.set(folder, { ...study });
+    }
+  }
+  for (const st of summary.studies ?? []) {
+    for (const se of st.series ?? []) {
+      if (!se.folder) continue;
+      if (studyByFolder.has(se.folder)) continue;
+      const guess = defaultModalityForSeries(se.modality);
+      const study: Study = {
+        modality: (guess ?? '') as Modality, // empty until user picks if no guess
+      };
+      if (guess) studyByFolder.set(se.folder, study);
+      // If guess is null, leave unset so validation fails until user picks.
+    }
+  }
   refreshCaseFormUI();
 }
 
 populateCaseSelects();
 resetCaseForm();
 
-// Live validation + counters + draft persistence.
+// Live validation + counters + draft persistence for the case-form side.
 for (const el of [
-  caseTitle, caseModality, caseBodyPart, caseAgeBand, caseSex, caseVisibility,
-  caseClinicalHistory, caseFindings, caseDiscussion, caseTags,
+  caseTitle, caseSystem, caseAge, caseCertainty, caseQuiz,
+  caseClinicalHistory, caseDiscussion,
 ] as HTMLElement[]) {
   el.addEventListener('input', () => {
     refreshCaseFormUI();
     persistCaseDraft();
   });
   el.addEventListener('change', () => {
+    refreshCaseFormUI();
+    persistCaseDraft();
+  });
+}
+// Sex radios need their own hook (radios fire 'change', not 'input', when
+// keyboard-toggled; bind both for safety).
+for (const r of caseSexGroup.querySelectorAll<HTMLInputElement>('input[name="case-sex"]')) {
+  r.addEventListener('change', () => {
     refreshCaseFormUI();
     persistCaseDraft();
   });
@@ -1404,18 +1578,27 @@ btnCaseReady.addEventListener('click', () => {
     source_summary: studyMeta,
     output_root: anonOutput,
   };
-  // The actual Radiopaedia upload is a future issue. For now, build the
-  // placeholder payload and log it so the flow is visible end-to-end.
-  const payload = buildCasePayload(fullCase);
-  write(`case ready — ${form.title} (${form.modality ?? 'no modality'}, ${form.visibility})`);
-  console.info('[renderer] upload payload (placeholder):', payload);
+  // Upload is still a future issue. For now log the request bodies so the
+  // flow is visible end-to-end: one Case create + one Study create per series
+  // (positions start at 2; position 1 is the discussion slot).
+  const casePayload = buildCaseCreatePayload(fullCase);
+  const studies = collectStudies();
+  const studyPayloads = studies.map(
+    ({ study }, i) => buildStudyCreatePayload(study, i + 2),
+  );
+  write(`case ready — ${form.title} (${studies.length} stud${studies.length === 1 ? 'y' : 'ies'})`);
+  console.info('[renderer] case create payload:', casePayload);
+  console.info('[renderer] study create payloads:', studyPayloads);
 });
 
 // Try to restore any previously-saved draft at startup — harmless if no
 // summary is loaded yet, because the fields will be hidden until one is.
 const bootDraft = restoreCaseDraft();
 if (bootDraft) {
-  writeCaseForm(bootDraft);
+  writeCaseForm(bootDraft.case);
+  for (const [folder, study] of bootDraft.studies) {
+    studyByFolder.set(folder, { ...study });
+  }
   refreshCaseFormUI();
 }
 
