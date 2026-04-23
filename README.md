@@ -77,6 +77,54 @@ backend and the Node sidecar on free `127.0.0.1` ports, waits for `/health`,
 then opens the window. Drop a `.dcm` file or folder onto the drop zone — the
 anonymised output is written alongside it with an `_anon` suffix.
 
+### Smoke-testing the Radiopaedia upload flow
+
+Before wiring the upload path into the UI, you can exercise the full pipeline
+end-to-end against the Radiopaedia staging site with
+`scripts/smoke-test-radiopaedia-upload.mjs`. The script creates a **real draft
+case** on the configured host and uploads the `dicomanon` test-pattern fixture
+through `POST /api/v1/cases` → `POST .../studies` → `POST /direct_s3_uploads`
+→ S3 presigned `PUT` → `POST /image_preparation/.../series` → `PUT
+.../mark_upload_finished`. When it finishes it prints the case URL — open it
+in a browser and **delete the draft case manually** when you're done.
+
+```sh
+# Grab a fresh access token from the app (Settings → OAuth) or any other
+# source. Then:
+RADIOPAEDIA_API_BASE=https://env-develop.radiopaedia-dev.org \
+RADIOPAEDIA_ACCESS_TOKEN=<access_token> \
+node scripts/smoke-test-radiopaedia-upload.mjs
+```
+
+Env vars:
+
+- `RADIOPAEDIA_ACCESS_TOKEN` — **required.** The bearer token to use. Never
+  logged; only a 3-char head prefix is printed (so you can spot a
+  `Bearer <wrong-thing>` paste).
+- `RADIOPAEDIA_API_BASE` — optional, defaults to
+  `https://env-develop.radiopaedia-dev.org`. Point it at production at your
+  own risk.
+- `RADIOPAEDIA_REFRESH_TOKEN`, `RADIOPAEDIA_CLIENT_ID`,
+  `RADIOPAEDIA_CLIENT_SECRET` — optional trio. If all three are set and the
+  first `GET /api/v1/users/current` returns 401, the script will exchange the
+  refresh token at `/oauth/token`, cache the fresh pair in
+  `.radiopaedia-tokens.json` (gitignored; mode 0600), and retry the request
+  once. Without them a 401 aborts with a clear message.
+
+What to look for in the output:
+
+- A `→ METHOD url` log line before each HTTP request and a `← status` line
+  after. On a non-2xx the full response body is dumped to stderr.
+- `[smoke] login=…`, `[smoke] CASE_ID=…`, `[smoke] STUDY_ID=…`, and finally
+  `[smoke] SUCCESS` plus a `view at: <host>/cases/:id` URL.
+- If you see `[smoke] DICOM fixture not found`, run `cd backend-js && npm
+  install` to pull the `dicomanon` dep (it ships the fixture under
+  `fixtures/TestPattern_JPEG-Baseline_YBRFull.dcm`).
+
+The script never logs the bearer, refresh token, or client secret. It does
+print short (3-char) head prefixes for the bearer and refresh tokens so you
+can diagnose mis-paste issues without leaking the whole value.
+
 ### Tests
 
 ```sh

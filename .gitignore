@@ -38,3 +38,9 @@ src/shared/api.js.map
 # See src/main/radiopaedia-config.example.ts and
 # scripts/write-radiopaedia-config.mjs.
 src/main/radiopaedia-config.ts
+
+# Token cache written by scripts/smoke-test-radiopaedia-upload.mjs after a
+# successful refresh-token exchange, so you don't have to paste a fresh
+# access token on every run. Contains a live access_token + refresh_token —
+# never commit.
+.radiopaedia-tokens.json
