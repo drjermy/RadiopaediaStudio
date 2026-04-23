@@ -234,32 +234,33 @@ export const CASE_TITLE_MAX = 120;
 export const CASE_CLINICAL_HISTORY_MAX = 2000;
 
 /**
- * Systems vocabulary. IDs come from the Radiopaedia API spec. ID 5
- * ("Not applicable") is rendered last as a fallback; the other entries stay
- * in the spec's ascending-ID order because that also happens to read
- * naturally in a dropdown.
+ * Systems vocabulary. IDs are **verbatim** from the Radiopaedia API spec —
+ * the set is non-contiguous (5, 10, 13, 14 are not assigned), and
+ * "Not applicable" is id 24, not 5. Rendered alphabetically here for the
+ * dropdown; the API treats `system_id` as an opaque integer so order in
+ * this array only affects UI.
  */
 export const SYSTEM_OPTIONS = [
-  { id: 1, name: 'Breast' },
-  { id: 2, name: 'Cardiac' },
-  { id: 3, name: 'Central Nervous System' },
-  { id: 4, name: 'Chest' },
-  { id: 6, name: 'Forensic' },
-  { id: 7, name: 'Gastrointestinal' },
-  { id: 8, name: 'Gynaecology' },
-  { id: 9, name: 'Haematology' },
-  { id: 10, name: 'Head & Neck' },
-  { id: 11, name: 'Hepatobiliary' },
-  { id: 12, name: 'Interventional' },
-  { id: 13, name: 'Musculoskeletal' },
-  { id: 14, name: 'Obstetrics' },
-  { id: 15, name: 'Oncology' },
-  { id: 16, name: 'Paediatrics' },
-  { id: 17, name: 'Spine' },
-  { id: 18, name: 'Trauma' },
-  { id: 19, name: 'Urogenital' },
-  { id: 20, name: 'Vascular' },
-  { id: 5, name: 'Not applicable' },
+  { id: 1,  name: 'Breast' },
+  { id: 16, name: 'Cardiac' },
+  { id: 3,  name: 'Central Nervous System' },
+  { id: 4,  name: 'Chest' },
+  { id: 21, name: 'Forensic' },
+  { id: 6,  name: 'Gastrointestinal' },
+  { id: 19, name: 'Gynaecology' },
+  { id: 20, name: 'Haematology' },
+  { id: 7,  name: 'Head & Neck' },
+  { id: 8,  name: 'Hepatobiliary' },
+  { id: 17, name: 'Interventional' },
+  { id: 9,  name: 'Musculoskeletal' },
+  { id: 18, name: 'Obstetrics' },
+  { id: 22, name: 'Oncology' },
+  { id: 12, name: 'Paediatrics' },
+  { id: 15, name: 'Spine' },
+  { id: 23, name: 'Trauma' },
+  { id: 11, name: 'Urogenital' },
+  { id: 2,  name: 'Vascular' },
+  { id: 24, name: 'Not Applicable' },
 ] as const satisfies ReadonlyArray<{ id: number; name: string }>;
 export type SystemOption = (typeof SYSTEM_OPTIONS)[number];
 
