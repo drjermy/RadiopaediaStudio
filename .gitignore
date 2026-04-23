@@ -6,6 +6,9 @@ out/
 *.log
 .DS_Store
 
+# Claude Code worktrees + task transcripts
+.claude/
+
 # Local DICOM test data — don't commit
 dcm/
 
