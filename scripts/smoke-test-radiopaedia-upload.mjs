@@ -29,6 +29,11 @@
 //   6. POST   /image_preparation/:CASE_ID/studies/:STUDY_ID/series
 //   7. PUT    /api/v1/cases/:CASE_ID/mark_upload_finished
 //
+// Note: the "deprecated" /cases/:id/studies/:id/images ZIP endpoint is
+// specifically for pre-rendered PNG uploads — Andy's C# reference app
+// converts DICOM → PNG, zips the PNGs, and uploads those. DICOM uploads
+// must go through the S3-presigned + /image_preparation flow.
+//
 // API-shape gotchas handled here:
 //   - `stack_upload.uploaded_data` is a Rails-style object with string-keyed
 //     numeric indices: `{ "0": <upload_id> }`. Sending a JSON array silently
@@ -177,21 +182,32 @@ function buildStudyCreatePayload(s, position) {
 /**
  * The series body for POST /image_preparation/:CASE_ID/studies/:STUDY_ID/series.
  *
- * IMPORTANT: `stack_upload.uploaded_data` MUST be an object with string-keyed
- * numeric indices, NOT a JSON array. `{"0": <id>, "1": <id>}` is correct;
- * `[<id>, <id>]` silently 400s. This is how Rails serialises
- * `params[:stack_upload][:uploaded_data][]` and the API round-trips the same
- * shape.
+ * Ground truth from the radiopaedia/radiopaedia Rails controller
+ * (app/controllers/image_preparation_controller.rb):
+ *
+ *   def series_params
+ *     params.require(:series).permit(:specifics, :perspective, :root_index)
+ *   end
+ *
+ *   def upload_params
+ *     params.permit(:case_id, :study_id, :position_in_study,
+ *                   stack_upload: { uploaded_data: [] })
+ *   end
+ *
+ * So:
+ *   - `series.root_index` is the real field name (docs' prose saying
+ *     `root_idx` is wrong; the JSON example is right).
+ *   - `stack_upload.uploaded_data` MUST be a JSON ARRAY — the `[]` in the
+ *     permit call. The docs' example object-shape `{"0": 1234}` is how Rails
+ *     serialises form-encoded array params internally; sending that shape in
+ *     JSON produces an ActionController::Parameters at `params.dig(...)`
+ *     which ActiveJob fails to serialise with `UnfilteredParameters`.
  */
 function buildSeriesPayload(uploadIds) {
-  const uploaded_data = {};
-  uploadIds.forEach((id, i) => {
-    uploaded_data[String(i)] = id;
-  });
   return {
     image_format: 'application/dicom',
     series: { root_index: 0 },
-    stack_upload: { uploaded_data },
+    stack_upload: { uploaded_data: uploadIds },
   };
 }
 
@@ -395,7 +411,26 @@ async function main() {
   console.log(`[smoke] STUDY_ID=${studyId}`);
 
   // 4. Prepare the DICOM fixture.
-  const fixturePath = join(
+  //
+  // Defaults to the `TestPattern_JPEG-Baseline_YBRFull.dcm` fixture shipped
+  // with dicomanon. That fixture is an *input* to dicomanon's own tests —
+  // it still has PatientName/PatientID/PatientBirthDate and no
+  // PatientIdentityRemoved flag. We always run it through dicomanon's
+  // `Anonymize()` below so the bytes we hash + upload are anonymised.
+  //
+  // However: the fixture uses an unusual combination (JPEG Baseline +
+  // YBR Full + Secondary Capture SOP class) that can trip up Radiopaedia's
+  // DICOM→PNG conversion pipeline on /image_preparation. If you see a
+  // 500 on that step, point RADIOPAEDIA_SMOKE_FIXTURE at a real
+  // anonymised clinical DICOM (CT/MR/XR slice, uncompressed) instead:
+  //
+  //   RADIOPAEDIA_SMOKE_FIXTURE=/path/to/anon-slice.dcm node scripts/smoke-test-radiopaedia-upload.mjs
+  //
+  // The script still runs `Anonymize()` on whatever fixture you point at,
+  // so pre-anonymising is optional — but a file with a common transfer
+  // syntax + monochrome photometric + CT/MR/XR SOP class is much more
+  // likely to survive Radiopaedia's server-side processing.
+  const defaultFixturePath = join(
     repoRoot,
     'backend-js',
     'node_modules',
@@ -403,18 +438,45 @@ async function main() {
     'fixtures',
     'TestPattern_JPEG-Baseline_YBRFull.dcm',
   );
+  const fixturePath = process.env.RADIOPAEDIA_SMOKE_FIXTURE ?? defaultFixturePath;
   if (!existsSync(fixturePath)) {
-    console.error(
-      `[smoke] DICOM fixture not found at:\n  ${fixturePath}\n` +
+    const msg = process.env.RADIOPAEDIA_SMOKE_FIXTURE
+      ? `[smoke] RADIOPAEDIA_SMOKE_FIXTURE points at a missing file:\n  ${fixturePath}`
+      : `[smoke] DICOM fixture not found at:\n  ${fixturePath}\n` +
         "Run `cd backend-js && npm install` to pull the `dicomanon` dep (it ships " +
-        'the TestPattern fixture).',
-    );
+        'the TestPattern fixture), or set RADIOPAEDIA_SMOKE_FIXTURE to a DICOM you have on disk.';
+    console.error(msg);
     process.exit(1);
   }
-  const bytes = await readFile(fixturePath);
+  const rawBytes = await readFile(fixturePath);
+  // `dicomanon` lives in backend-js/node_modules — Node ESM won't auto-find it
+  // from the scripts/ folder, so import by explicit path to the package's
+  // `exports.import` entry (lib/index.js).
+  const dicomanonEntry = join(
+    repoRoot,
+    'backend-js',
+    'node_modules',
+    'dicomanon',
+    'lib',
+    'index.js',
+  );
+  const { Message, Anonymize } = await import(
+    `file://${dicomanonEntry}`
+  );
+  const ab = rawBytes.buffer.slice(
+    rawBytes.byteOffset,
+    rawBytes.byteOffset + rawBytes.byteLength,
+  );
+  const msg = Message.readFile(ab);
+  msg.dict = Anonymize(msg.dict);
+  const anonArrayBuffer = msg.write();
+  const bytes = Buffer.from(anonArrayBuffer);
   const sha256 = createHash('sha256').update(bytes).digest('hex');
   console.log(`[smoke] fixture=${fixturePath}`);
-  console.log(`[smoke] fixture sha256=${sha256} size=${bytes.byteLength}`);
+  console.log(
+    `[smoke] anonymised via dicomanon: raw=${rawBytes.byteLength} → anon=${bytes.byteLength}`,
+  );
+  console.log(`[smoke] fixture sha256=${sha256} (post-anon) size=${bytes.byteLength}`);
 
   // 5. POST /direct_s3_uploads — claim a presigned URL.
   const s3ReqRes = await callWithRefresh(
@@ -430,24 +492,45 @@ async function main() {
   const upload = Array.isArray(uploads) ? uploads[0] : uploads?.[0];
   const uploadId = upload?.id;
   const uploadUrl = upload?.url;
-  if (!uploadId || !uploadUrl) {
-    console.error('[smoke] /direct_s3_uploads response had no [0].id / [0].url:');
+  const alreadyUploaded = upload?.status === 'already_uploaded';
+  if (!uploadId) {
+    console.error('[smoke] /direct_s3_uploads response had no [0].id:');
     console.error(JSON.stringify(s3Req, null, 2));
     process.exit(1);
   }
-  console.log(`[smoke] upload_id=${uploadId}`);
-
-  // 6. PUT <presigned url> — NO Authorization header here.
-  const s3Res = await s3Put(uploadUrl, bytes);
-  if (!s3Res.ok) {
-    await dumpBody(s3Res);
-    console.error('[smoke] S3 PUT failed — aborting');
+  if (!alreadyUploaded && !uploadUrl) {
+    console.error('[smoke] /direct_s3_uploads response had no [0].url and no "already_uploaded" status:');
+    console.error(JSON.stringify(s3Req, null, 2));
     process.exit(1);
+  }
+  console.log(`[smoke] upload_id=${uploadId}${alreadyUploaded ? ' (already_uploaded — skipping S3 PUT)' : ''}`);
+
+  // 6. PUT <presigned url> — NO Authorization header here. Skip entirely
+  //    when status=already_uploaded: the ID is still valid but there's
+  //    nothing to upload and no url was returned.
+  if (!alreadyUploaded) {
+    const s3Res = await s3Put(uploadUrl, bytes);
+    if (!s3Res.ok) {
+      await dumpBody(s3Res);
+      console.error('[smoke] S3 PUT failed — aborting');
+      process.exit(1);
+    }
   }
 
   // 7. POST /image_preparation/:CASE_ID/studies/:STUDY_ID/series.
   //    uploaded_data is a Rails-style object (see buildSeriesPayload).
+  //
+  // Small settle delay after the S3 PUT: the file is on S3 once we get
+  // the 200, but Radiopaedia's /image_preparation handler may need to
+  // verify the object exists and run its anonymiser check. We don't have
+  // a signal for readiness, so a short pause is a pragmatic belt-and-braces
+  // hedge. If 500s persist regardless of this delay, the bug is elsewhere.
+  if (!alreadyUploaded) {
+    console.log('[smoke] waiting 2s for S3 upload to settle before /image_preparation…');
+    await new Promise((r) => setTimeout(r, 2000));
+  }
   const seriesPayload = buildSeriesPayload([uploadId]);
+  console.log(`[smoke] /image_preparation request body: ${JSON.stringify(seriesPayload)}`);
   const seriesRes = await callWithRefresh(
     () =>
       apiFetch(`/image_preparation/${caseId}/studies/${studyId}/series`, {

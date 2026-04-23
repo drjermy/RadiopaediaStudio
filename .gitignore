@@ -11,6 +11,7 @@ out/
 
 # Local DICOM test data — don't commit
 dcm/
+*.dcm
 
 # Python
 backend/.venv/
