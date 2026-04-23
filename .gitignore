@@ -33,3 +33,8 @@ src/renderer/renderer.js.map
 # api.ts is types-only; tsc still emits empty JS siblings we don't ship.
 src/shared/api.js
 src/shared/api.js.map
+
+# Radiopaedia OAuth client credentials baked at build time from env vars.
+# See src/main/radiopaedia-config.example.ts and
+# scripts/write-radiopaedia-config.mjs.
+src/main/radiopaedia-config.ts

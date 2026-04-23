@@ -29,6 +29,43 @@ npm install
 
 Requires Python 3.11+.
 
+### Radiopaedia OAuth client credentials
+
+The app uses the Radiopaedia OAuth 2.0 authorization-code flow. Client
+credentials for the OAuth application are baked into the build at build
+time, not shipped alongside the user's data:
+
+- `RADIOPAEDIA_CLIENT_ID` — the OAuth app's client_id.
+- `RADIOPAEDIA_CLIENT_SECRET` — the OAuth app's client_secret.
+- `RADIOPAEDIA_REDIRECT_URI` — optional; defaults to
+  `urn:ietf:wg:oauth:2.0:oob`. Radiopaedia's OAuth app-registration
+  form rejects non-HTTPS redirect URIs, so an RFC 8252 loopback
+  (`http://127.0.0.1:<port>/...`) isn't accepted — OOB is the only
+  viable redirect for a desktop app. With OOB the user authorises in
+  their system browser, Radiopaedia shows the authorization code on
+  its confirmation page, and the user pastes it into our Settings UI.
+
+The `build:frontend` step runs `scripts/write-radiopaedia-config.mjs`
+first. It:
+
+1. If `RADIOPAEDIA_CLIENT_ID` / `RADIOPAEDIA_CLIENT_SECRET` are set in
+   the environment, writes `src/main/radiopaedia-config.ts` with those
+   literals. This is the CI / packaging path.
+2. Otherwise, if `src/main/radiopaedia-config.ts` doesn't exist, copies
+   `src/main/radiopaedia-config.example.ts` into place so tsc has
+   something to typecheck.
+3. Otherwise, does nothing (lets devs hand-maintain their local copy).
+
+`src/main/radiopaedia-config.ts` is gitignored. For CI, set the two env
+vars in the job's secrets. For local dev either:
+
+- copy `src/main/radiopaedia-config.example.ts` to
+  `src/main/radiopaedia-config.ts` and paste in your values, or
+- `export RADIOPAEDIA_CLIENT_ID=... RADIOPAEDIA_CLIENT_SECRET=...` and
+  let the build script generate the file, or
+- leave the credentials empty and use the in-app institutional override
+  (stored encrypted via `safeStorage`, overrides the baked values).
+
 ### Running
 
 ```sh

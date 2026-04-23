@@ -4,10 +4,21 @@ import * as path from 'path';
 import { BackendHandle, startBackend, stopBackend } from './python-manager';
 import { NodeBackendHandle, startNodeSidecar, stopNodeSidecar } from './node-manager';
 import {
-  getRadiopaediaToken,
-  setRadiopaediaToken,
-  clearRadiopaediaToken,
+  getRadiopaediaTokens,
+  setRadiopaediaTokens,
+  clearRadiopaediaTokens,
+  getRadiopaediaClientOverride,
+  setRadiopaediaClientOverride,
+  clearRadiopaediaClientOverride,
+  type RadiopaediaTokens,
+  type RadiopaediaClientOverride,
 } from './credentials';
+import { getValidAccessToken } from './radiopaedia-auth';
+import {
+  openAuthorizationPage,
+  exchangeAuthorizationCode,
+  type AuthExchangeResult,
+} from './radiopaedia-oauth-oob';
 
 let backend: BackendHandle | null = null;
 let nodeBackend: NodeBackendHandle | null = null;
@@ -71,15 +82,50 @@ app.whenReady().then(async () => {
   ipcMain.handle('shell:reveal', (_evt, p: string) => {
     shell.showItemInFolder(p);
   });
-  ipcMain.handle('credentials:get-radiopaedia-token', (): string | null => {
-    return getRadiopaediaToken();
+  ipcMain.handle(
+    'credentials:get-radiopaedia-tokens',
+    (): RadiopaediaTokens | null => getRadiopaediaTokens(),
+  );
+  ipcMain.handle(
+    'credentials:set-radiopaedia-tokens',
+    (_evt, tokens: RadiopaediaTokens): void => setRadiopaediaTokens(tokens),
+  );
+  ipcMain.handle('credentials:clear-radiopaedia-tokens', (): void => {
+    clearRadiopaediaTokens();
   });
-  ipcMain.handle('credentials:set-radiopaedia-token', (_evt, token: string): void => {
-    setRadiopaediaToken(token);
+  ipcMain.handle(
+    'credentials:get-radiopaedia-client-override',
+    (): RadiopaediaClientOverride | null => getRadiopaediaClientOverride(),
+  );
+  ipcMain.handle(
+    'credentials:set-radiopaedia-client-override',
+    (_evt, override: RadiopaediaClientOverride): void =>
+      setRadiopaediaClientOverride(override),
+  );
+  ipcMain.handle('credentials:clear-radiopaedia-client-override', (): void => {
+    clearRadiopaediaClientOverride();
   });
-  ipcMain.handle('credentials:clear-radiopaedia-token', (): void => {
-    clearRadiopaediaToken();
-  });
+  ipcMain.handle(
+    'radiopaedia:get-valid-access-token',
+    (): Promise<string | null> => getValidAccessToken(),
+  );
+  ipcMain.handle(
+    'radiopaedia:open-authorization-page',
+    async (): Promise<'ok' | 'error'> => {
+      try {
+        await openAuthorizationPage();
+        return 'ok';
+      } catch (err) {
+        console.warn('[main] openAuthorizationPage failed:', (err as Error)?.message);
+        return 'error';
+      }
+    },
+  );
+  ipcMain.handle(
+    'radiopaedia:exchange-authorization-code',
+    (_evt, code: string): Promise<AuthExchangeResult> =>
+      exchangeAuthorizationCode(code),
+  );
   ipcMain.handle('dialog:pickFolder', async (): Promise<string | null> => {
     if (!mainWindow) return null;
     const result = await dialog.showOpenDialog(mainWindow, {

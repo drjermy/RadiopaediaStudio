@@ -8,9 +8,11 @@
     "build:node": "cd backend-js && npm install --omit=dev",
     "build:viewer": "node scripts/build-viewer.mjs",
     "build:renderer": "tsc -p tsconfig.renderer.json",
-    "build:frontend": "tsc -p tsconfig.json && npm run build:renderer && npm run build:viewer",
+    "codegen:radiopaedia-config": "node scripts/write-radiopaedia-config.mjs",
+    "build:frontend": "npm run codegen:radiopaedia-config && tsc -p tsconfig.json && npm run build:renderer && npm run build:viewer",
     "build": "npm run build:frontend",
     "dev": "npm run build:frontend && electron .",
+    "test": "node --test test/",
     "pack": "npm run build:backend && npm run build:node && npm run build:frontend && electron-builder --mac --dir",
     "dist": "npm run build:backend && npm run build:node && npm run build:frontend && electron-builder --mac"
   },

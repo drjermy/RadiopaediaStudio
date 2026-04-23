@@ -22,10 +22,33 @@ interface DialogBridge {
   pickFolder(): Promise<string | null>;
 }
 
+interface RadiopaediaTokens {
+  access_token: string;
+  refresh_token: string;
+  expires_at: number;
+  token_type: 'Bearer';
+}
+
+interface RadiopaediaClientOverride {
+  client_id: string;
+  client_secret: string;
+}
+
 interface CredentialsBridge {
-  getRadiopaediaToken(): Promise<string | null>;
-  setRadiopaediaToken(token: string): Promise<void>;
-  clearRadiopaediaToken(): Promise<void>;
+  getRadiopaediaTokens(): Promise<RadiopaediaTokens | null>;
+  setRadiopaediaTokens(tokens: RadiopaediaTokens): Promise<void>;
+  clearRadiopaediaTokens(): Promise<void>;
+  getRadiopaediaClientOverride(): Promise<RadiopaediaClientOverride | null>;
+  setRadiopaediaClientOverride(override: RadiopaediaClientOverride): Promise<void>;
+  clearRadiopaediaClientOverride(): Promise<void>;
+}
+
+type RadiopaediaAuthExchangeResult = 'ok' | 'error';
+
+interface RadiopaediaBridge {
+  getValidAccessToken(): Promise<string | null>;
+  openAuthorizationPage(): Promise<'ok' | 'error'>;
+  exchangeAuthorizationCode(code: string): Promise<RadiopaediaAuthExchangeResult>;
 }
 
 // viewer.js → window.viewerAPI (see src/renderer/viewer.js).
@@ -73,6 +96,7 @@ declare global {
     shellBridge: ShellBridge;
     dialogBridge: DialogBridge;
     credentials: CredentialsBridge;
+    radiopaedia: RadiopaediaBridge;
     viewerAPI?: ViewerAPI;
   }
 
