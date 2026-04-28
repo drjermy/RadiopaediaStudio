@@ -890,8 +890,10 @@ function renderStudySummary(): void {
         const desc = document.createElement('div');
         desc.className = 'series-desc';
         desc.textContent = se.description || '(no description)';
+        // Modality is already shown in the study-block header — no need to
+        // repeat it here. Compression status lives in the top-left badge
+        // on the thumbnail (LOSSLESS / LOSSY pill below).
         const tech: string[] = [];
-        if (se.modality) tech.push(se.modality);
         if (se.orientation) tech.push(se.orientation);
         if (se.slice_thickness != null) {
           // "3/2 mm" when slices abut or overlap (spacing ≤ thickness),
@@ -915,20 +917,28 @@ function renderStudySummary(): void {
             sizeBits.push(`${humanBytes(se.total_bytes / se.slice_count)}/slice`);
           }
         }
-        if (se.transfer_syntax?.name) sizeBits.push(se.transfer_syntax.name);
         const size = document.createElement('div');
         size.className = 'series-meta';
         size.textContent = sizeBits.join(' · ');
 
         li.append(desc, meta, size);
 
-        // Compression pill on the thumbnail (top-right) — grey for lossless,
-        // amber for lossy. No pill for uncompressed.
+        // Compression pill on the thumbnail. Always present so the user
+        // can see the status at a glance — neutral grey for lossless,
+        // amber for lossy, muted dim grey for uncompressed.
         const ts = se.transfer_syntax;
-        if (ts?.compressed) {
+        if (ts) {
           const pill = document.createElement('span');
-          pill.className = 'compression-tag' + (ts.lossy ? ' lossy' : '');
-          pill.textContent = ts.lossy ? 'LOSSY' : 'LOSSLESS';
+          if (!ts.compressed) {
+            pill.className = 'compression-tag uncompressed';
+            pill.textContent = 'UNCOMPRESSED';
+          } else if (ts.lossy) {
+            pill.className = 'compression-tag lossy';
+            pill.textContent = 'LOSSY';
+          } else {
+            pill.className = 'compression-tag';
+            pill.textContent = 'LOSSLESS';
+          }
           li.appendChild(pill);
         }
 
