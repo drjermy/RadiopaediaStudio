@@ -1921,6 +1921,11 @@ interface PreparedUpload {
 }
 let lastPrepared: PreparedUpload | null = null;
 let uploadInFlight = false;
+// Tracks the in-flight or most-recently-failed case on Radiopaedia so the
+// error banner can surface a link the user can follow to inspect or delete
+// the partial draft. Cleared on success, set as soon as the case-create
+// returns an id.
+let partialCase: { caseId: number; apiBase: string } | null = null;
 
 // Render the preview modal in its initial (pre-submit) state.
 function showUploadPreview(p: PreparedUpload): void {
@@ -2179,11 +2184,15 @@ async function uploadCaseAndStudies(p: PreparedUpload): Promise<void> {
 
   // 2. Create case.
   setStep('case', 'running');
+  partialCase = null; // any prior partial-case link from a previous attempt is now stale.
   let caseId: number | null = null;
   try {
     const created = await radiopaediaApiPost(apiBase, '/api/v1/cases', token, p.casePayload);
     caseId = (created.id ?? (created.case as { id?: number } | undefined)?.id) as number ?? null;
     if (!caseId) throw new Error(`POST /cases response had no id: ${JSON.stringify(created)}`);
+    // From here on, any failure leaves a draft case on Radiopaedia we
+    // should surface back to the user (so they can inspect or delete it).
+    partialCase = { caseId, apiBase };
     setStep('case', 'done', `case_id=${caseId}`);
   } catch (e) {
     return apiCallFailed('case', e);
@@ -2479,10 +2488,42 @@ function finishWithError(_stepId: string, message: string): void {
   btnPreviewCancel.textContent = 'Close';
   uploadPreviewResult.hidden = false;
   uploadPreviewResult.innerHTML = '';
+
   const banner = document.createElement('div');
   banner.className = 'modal-error';
   banner.textContent = message;
   uploadPreviewResult.appendChild(banner);
+
+  // If a partial draft was created on Radiopaedia, surface a link so the
+  // user can inspect or delete it. "Try again" creates a fresh draft —
+  // it doesn't resume — so the partial one stays orphaned until they
+  // delete it on the website.
+  if (partialCase) {
+    const note = document.createElement('div');
+    note.style.marginTop = '10px';
+    note.style.fontSize = '12px';
+    note.style.lineHeight = '1.5';
+    const caseUrl = `${partialCase.apiBase}/cases/${partialCase.caseId}`;
+    note.innerHTML =
+      `A partial draft case was created on Radiopaedia (id ${partialCase.caseId}). ` +
+      `<strong>Try again</strong> will create a fresh draft — open the partial one ` +
+      `to inspect what made it through, and delete it there before retrying if you ` +
+      `don't want it lingering.`;
+    const linkRow = document.createElement('div');
+    linkRow.style.marginTop = '6px';
+    const a = document.createElement('a');
+    a.href = caseUrl;
+    a.textContent = `Open partial case ${partialCase.caseId} →`;
+    a.style.color = 'var(--accent)';
+    a.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      void window.shellBridge.openExternal(caseUrl);
+    });
+    linkRow.appendChild(a);
+    uploadPreviewResult.appendChild(note);
+    uploadPreviewResult.appendChild(linkRow);
+  }
+
   write(`upload failed: ${message}`);
 }
 
@@ -2493,6 +2534,7 @@ function finishWithSuccess(
   studyIds: number[],
 ): void {
   uploadInFlight = false;
+  partialCase = null;
   btnPreviewSubmit.disabled = true;
   btnPreviewSubmit.textContent = 'Sent ✓';
   btnPreviewCancel.disabled = false;

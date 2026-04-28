@@ -173,7 +173,7 @@ async function uploadSeries(args: UploadSeriesArgs): Promise<void> {
   // 1. Glob the DICOM files in the series folder.
   const files = await listDicomFiles(series.folder);
   if (files.length === 0) {
-    throw new Error(`Series folder has no .dcm files: ${series.folder}`);
+    throw new Error(`Series folder has no files to upload: ${series.folder}`);
   }
   emit({
     type: 'series-start',
@@ -261,19 +261,25 @@ function extractUploadsArray(json: unknown): PresignEntry[] {
 }
 
 async function listDicomFiles(folder: string): Promise<string[]> {
+  // Accept any regular file in the series folder. We don't filter on
+  // `.dcm` because Radiopaedia's anonymiser preserves source filenames,
+  // and a lot of clinical DICOMs come out of PACS with no extension at
+  // all (e.g. "3XUGRC0F"). The rest of the backend already treats the
+  // folder as DICOM-only, so this matches scan / thumbnails / reformat.
+  // Hidden files (.DS_Store, ._*) are excluded so a stray macOS metadata
+  // sibling doesn't get hashed and uploaded.
   const entries = await readdir(folder);
   const files: Array<{ path: string; name: string }> = [];
   for (const name of entries) {
-    if (!/\.dcm$/i.test(name)) continue;
+    if (name.startsWith('.')) continue;
     const path = join(folder, name);
     try {
       const s = await stat(path);
       if (s.isFile()) files.push({ path, name });
     } catch { /* skip unreadable */ }
   }
-  // Sort by name so the slice order is deterministic — image0000.dcm,
-  // image0001.dcm, etc. Whatever order the anonymiser used to write the
-  // folder will sort the same way here.
+  // Sort by name so the slice order is deterministic. Whatever order the
+  // anonymiser used to write the folder will sort the same way here.
   files.sort((a, b) => a.name.localeCompare(b.name));
   return files.map((f) => f.path);
 }
