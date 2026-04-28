@@ -15,7 +15,7 @@ extraResources:
   - from: backend-js
     to: backend-js
     filter:
-      - "server.mjs"
+      - "*.mjs"
       - "package.json"
       - "node_modules/**/*"
 mac:
