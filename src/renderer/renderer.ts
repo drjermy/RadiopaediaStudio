@@ -1561,6 +1561,7 @@ btnCancelRun.addEventListener('click', () => {
   }
 });
 btnReset.addEventListener('click', () => {
+  const cleared = anonOutput ? basename(anonOutput) : 'case';
   closeViewer();
   pending = null;
   anonOutput = null;
@@ -1569,7 +1570,9 @@ btnReset.addEventListener('click', () => {
   dropDetails.open = false;
   dropDetailsBody.innerHTML = '';
   renderStudySummary();
-  log.textContent = '';
+  // Don't wipe the activity log — it's the only timeline a user has of
+  // what happened in this session. The Log modal has its own Clear
+  // action for when the buffer's actually in the way.
   try { sessionStorage.removeItem(LAST_FOLDER_KEY); } catch { /* ignore */ }
   // Clear the case-draft too: a full reset shouldn't bleed the old case's
   // title/history into the next study the user drops in.
@@ -1577,6 +1580,7 @@ btnReset.addEventListener('click', () => {
   resetCaseForm();
   uploadSeriesListEl.innerHTML = '';
   setState('idle');
+  write(`cleared: ${cleared}`);
 });
 
 btnRevealMain.addEventListener('click', () => {
