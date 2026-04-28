@@ -839,9 +839,28 @@
       gap: 4px;
       margin: 12px 0 4px;
     }
+    /* Default <progress> rendering on macOS / Chromium can be near-invisible
+       in dark mode (white track on white) — paint it explicitly via the
+       webkit pseudo-elements so the track + filled portion both show up
+       on either theme. */
     .upload-progress progress {
       width: 100%;
       height: 8px;
+      appearance: none;
+      -webkit-appearance: none;
+      border: none;
+      border-radius: 4px;
+      overflow: hidden;
+      background: rgba(127, 127, 127, 0.25);
+    }
+    .upload-progress progress::-webkit-progress-bar {
+      background: rgba(127, 127, 127, 0.25);
+      border-radius: 4px;
+    }
+    .upload-progress progress::-webkit-progress-value {
+      background: var(--accent);
+      border-radius: 4px;
+      transition: width 0.15s ease;
     }
     .upload-progress-text {
       font-size: 11px;
