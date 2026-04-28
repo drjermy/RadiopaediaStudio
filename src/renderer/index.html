@@ -589,26 +589,92 @@
     #main-area { flex: 1; display: flex; flex-direction: column; }
     #main-area > * { flex: 1; }
 
-    /* Case details — sits below the study summary inside the Done panel.
-       Uses <details> so the user can collapse it but stay on the same
-       page as the thumbnails (delete + trim affordances stay reachable). */
-    .case-details {
-      border: 1px solid rgba(127, 127, 127, 0.25);
-      border-radius: 8px;
-      padding: 8px 12px;
-      margin-top: 8px;
+    /* Upload panel — separate view for case metadata + series selection.
+       Reached from the Done panel via "Add to Radiopaedia". */
+    .done-header-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
     }
-    .case-details > summary {
+    .upload-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .upload-header h2 { margin: 0; }
+    .back-btn {
+      background: transparent;
+      border: 1px solid rgba(127, 127, 127, 0.4);
+      border-radius: 5px;
+      padding: 4px 10px;
       cursor: pointer;
-      font-weight: 600;
-      font-size: 14px;
-      color: #333;
-      padding: 4px 0;
-      user-select: none;
+      font: inherit;
+      color: inherit;
     }
-    .case-details[open] > summary {
-      border-bottom: 1px solid rgba(127, 127, 127, 0.15);
-      margin-bottom: 10px;
+    .back-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .upload-hint {
+      font-size: 12px;
+      color: #888;
+      margin: 0;
+    }
+    .upload-section-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: #555;
+      margin: 16px 0 4px 0;
+      padding-top: 12px;
+      border-top: 1px solid rgba(127, 127, 127, 0.2);
+    }
+    .upload-series-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .upload-series-row {
+      display: flex;
+      gap: 10px;
+      padding: 8px;
+      border: 1px solid rgba(127, 127, 127, 0.25);
+      border-radius: 6px;
+      align-items: flex-start;
+    }
+    .upload-series-row.unselected {
+      opacity: 0.45;
+    }
+    .upload-series-row .upload-row-check {
+      flex: 0 0 auto;
+      margin-top: 4px;
+    }
+    .upload-series-row .upload-row-thumb {
+      flex: 0 0 128px;
+      width: 128px;
+      height: 128px;
+      object-fit: contain;
+      border-radius: 4px;
+      background: #000;
+    }
+    .upload-series-row .upload-row-thumb-placeholder {
+      flex: 0 0 128px;
+      width: 128px;
+      height: 128px;
+      border-radius: 4px;
+      background: rgba(127, 127, 127, 0.2);
+    }
+    .upload-series-row .upload-row-body {
+      flex: 1 1 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      min-width: 0;
+    }
+    .upload-series-row .upload-row-desc {
+      font-size: 13px;
+      font-weight: 500;
+    }
+    .upload-series-row .upload-row-meta {
+      font-size: 11px;
+      color: #888;
     }
     .case-form {
       display: flex;
@@ -795,7 +861,10 @@
     <div id="panel-done" class="panel">
       <div class="done-header">
         <h2 id="done-title">Done</h2>
-        <button class="primary" id="btn-reveal-main">Reveal in Finder</button>
+        <div class="done-header-actions">
+          <button id="btn-reveal-main">Reveal in Finder</button>
+          <button class="primary" id="btn-add-case">Add to Radiopaedia</button>
+        </div>
       </div>
       <details id="drop-details" class="drop-details" hidden>
         <summary>Anonymisation details</summary>
@@ -843,78 +912,59 @@
         </div>
       </div>
 
-      <details id="case-details" class="case-details" open hidden>
-        <summary>Case details</summary>
-        <form id="case-form" class="case-form" novalidate>
-          <div class="case-row">
-            <label class="case-field case-field-wide">
-              <span class="case-label">
-                Title <span class="case-required">*</span>
-                <span class="case-counter" id="case-title-counter"></span>
-              </span>
-              <input type="text" id="case-title" maxlength="120" required
-                placeholder="e.g. Acute appendicitis on CT" />
-            </label>
-          </div>
+    </div>
 
-          <div class="case-row">
-            <label class="case-field">
-              <span class="case-label">System <span class="case-required">*</span></span>
-              <select id="case-system" required>
-                <option value="">(select a system)</option>
-              </select>
-            </label>
-            <label class="case-field">
-              <span class="case-label">Patient age</span>
-              <input type="text" id="case-age" placeholder="e.g. 34 years" />
-            </label>
-            <div class="case-field">
-              <span class="case-label">Sex</span>
-              <div class="case-radio-group" id="case-sex-group">
-                <label><input type="radio" name="case-sex" value="M" /> Male</label>
-                <label><input type="radio" name="case-sex" value="F" /> Female</label>
-                <label><input type="radio" name="case-sex" value="O" /> Other</label>
-              </div>
-            </div>
-            <label class="case-field">
-              <span class="case-label">Diagnostic certainty</span>
-              <select id="case-certainty">
-                <option value="">(unspecified)</option>
-              </select>
-            </label>
-          </div>
+    <div id="panel-upload" class="panel">
+      <div class="upload-header">
+        <button id="btn-upload-back" class="back-btn" type="button">← Back</button>
+        <h2>Add to Radiopaedia</h2>
+      </div>
 
+      <form id="case-form" class="case-form" novalidate>
+        <div class="case-row">
           <label class="case-field case-field-wide">
             <span class="case-label">
-              Clinical history
-              <span class="case-counter" id="case-history-counter"></span>
+              Title <span class="case-required">*</span>
+              <span class="case-counter" id="case-title-counter"></span>
             </span>
-            <textarea id="case-clinical-history" rows="3"
-              placeholder="Presenting complaint, relevant history, context."></textarea>
+            <input type="text" id="case-title" maxlength="120" required
+              placeholder="e.g. Acute appendicitis on CT" />
           </label>
+        </div>
 
-          <label class="case-field case-field-wide">
-            <span class="case-label">Case discussion</span>
-            <textarea id="case-discussion" rows="4"
-              placeholder="Discussion, teaching points, differential."></textarea>
+        <div class="case-row">
+          <label class="case-field">
+            <span class="case-label">System <span class="case-required">*</span></span>
+            <select id="case-system" required>
+              <option value="">(select a system)</option>
+            </select>
           </label>
+        </div>
 
-          <label class="case-checkbox-row">
-            <input type="checkbox" id="case-quiz" />
-            Suitable for quiz
-          </label>
+        <p class="upload-hint">
+          Required fields only — fill in age, sex, history, discussion, etc. on Radiopaedia
+          after upload.
+        </p>
 
-          <div class="case-actions">
-            <span class="case-validation" id="case-validation"></span>
-            <button type="button" class="primary" id="btn-case-ready" disabled>
-              Ready to upload
-            </button>
-          </div>
-        </form>
-      </details>
+        <h3 class="upload-section-title">Series to include</h3>
+        <div id="upload-series-list" class="upload-series-list"></div>
 
+        <div class="case-actions">
+          <span class="case-validation" id="case-validation"></span>
+          <button type="button" class="primary" id="btn-case-ready" disabled>
+            Upload to Radiopaedia
+          </button>
+        </div>
+      </form>
     </div>
   </div>
+
+  <datalist id="series-plane-options">
+    <option value="Axial"></option>
+    <option value="Coronal"></option>
+    <option value="Sagittal"></option>
+    <option value="Oblique"></option>
+  </datalist>
 
   <div id="log"></div>
 

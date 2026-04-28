@@ -227,6 +227,35 @@ export interface DeleteSeriesRequest {
 // uploading to Radiopaedia. Field names match the Radiopaedia API; see
 // `buildCaseCreatePayload` / `buildStudyCreatePayload` below for the exact
 // wire format.
+//
+// Wire contract (server-side permit lists). Unrecognised keys are silently
+// dropped, so a 200 doesn't mean a field was accepted — verify by reading
+// the case back.
+//
+//   POST /api/v1/cases
+//     accepts: title, system_id, diagnostic_certainty_id, suitable_for_quiz,
+//              presentation, age, gender ('Male'|'Female'), body (HTML).
+//     UI-side names map at the wire boundary:
+//       clinical_history → presentation
+//       case_discussion  → body (HTML)
+//       patient_sex M/F  → gender Male/Female (Other is omitted).
+//
+//   POST /api/v1/cases/:case_id/studies
+//     accepts ONLY: modality, findings, position, caption.
+//     No `plane` / `orientation` field on this endpoint — it would be
+//     silently dropped. Plane lives on the Series, not the Study.
+//
+//   POST /image_preparation/:CASE_ID/studies/:STUDY_ID/series
+//     accepts: specifics, perspective, root_index. The series-create body
+//     wraps this in `{ series: { … }, stack_upload: { uploaded_data: [] } }`.
+//
+//   PATCH image_preparation series update
+//     accepts: perspective, specifics. Per-series `perspective` is what the
+//     UI labels "Plane" (free text — Axial / Coronal / Sagittal are
+//     typeahead suggestions, not an enum).
+//
+//   PUT /api/v1/cases/:case_id/mark_upload_finished
+//     no body params; finalises the draft.
 // ---------------------------------------------------------------------------
 
 /** Max lengths (kept as named constants so UI + serialiser agree). */
@@ -333,6 +362,11 @@ export interface Case {
  */
 export interface Study {
   modality: Modality;                           // one of MODALITY_OPTIONS.name.
+  // Plane is shown on the Study form for convenience but lives on the Series
+  // server-side (as `perspective`, set via the image_preparation series
+  // update endpoint). It must NOT be emitted on POST /api/v1/cases/:id/studies
+  // — see the wire-contract block at the top of this file.
+  plane?: string;                               // free text, suggested: Axial / Coronal / Sagittal / Oblique.
   findings?: string;                            // plain text in memory; HTML at wire.
   position?: number;                            // 1 = discussion; first study = 2.
   caption?: string;                             // plain text.
@@ -493,5 +527,9 @@ export function buildStudyCreatePayload(
   const findingsHtml = textToHtml(s.findings ?? '');
   setIf(out, 'findings', findingsHtml);
   setIf(out, 'caption', s.caption?.trim() ?? '');
+  // Plane intentionally omitted: the studies-create permit list is
+  // modality/findings/position/caption only. Plane gets sent later as
+  // `perspective` on the image_preparation series update — see Study.plane
+  // above and the upload-side payload builder when it's added.
   return out;
 }

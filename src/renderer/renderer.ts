@@ -1,6 +1,5 @@
 import type {
   Case,
-  CaseSex,
   CompressSpec,
   DeleteSeriesRequest,
   InspectResponse,
@@ -21,9 +20,7 @@ import type {
   WindowSpec,
 } from '../shared/api.js';
 import {
-  CASE_CLINICAL_HISTORY_MAX,
   CASE_TITLE_MAX,
-  DIAGNOSTIC_CERTAINTY_OPTIONS,
   MODALITY_OPTIONS,
   SYSTEM_OPTIONS,
   buildCaseCreatePayload,
@@ -52,6 +49,7 @@ const btnOpenFolder = opt<HTMLButtonElement>('btn-open-folder');
 const panelInspected = req<HTMLDivElement>('panel-inspected');
 const panelProcessing = req<HTMLDivElement>('panel-processing');
 const panelDone = req<HTMLDivElement>('panel-done');
+const panelUpload = req<HTMLDivElement>('panel-upload');
 const viewerSection = req<HTMLDivElement>('viewer-section');
 const viewerCanvas = req<HTMLDivElement>('viewer-canvas');
 const viewerTitle = req<HTMLHeadingElement>('viewer-title');
@@ -89,18 +87,13 @@ const btnCancelInspect = req<HTMLButtonElement>('btn-cancel-inspect');
 const btnReset = req<HTMLButtonElement>('btn-reset');
 
 // Case metadata form elements.
-const caseDetails = req<HTMLDetailsElement>('case-details');
 const caseForm = req<HTMLFormElement>('case-form');
+const btnAddCase = req<HTMLButtonElement>('btn-add-case');
+const btnUploadBack = req<HTMLButtonElement>('btn-upload-back');
+const uploadSeriesListEl = req<HTMLDivElement>('upload-series-list');
 const caseTitle = req<HTMLInputElement>('case-title');
 const caseTitleCounter = req<HTMLSpanElement>('case-title-counter');
 const caseSystem = req<HTMLSelectElement>('case-system');
-const caseAge = req<HTMLInputElement>('case-age');
-const caseSexGroup = req<HTMLDivElement>('case-sex-group');
-const caseCertainty = req<HTMLSelectElement>('case-certainty');
-const caseQuiz = req<HTMLInputElement>('case-quiz');
-const caseClinicalHistory = req<HTMLTextAreaElement>('case-clinical-history');
-const caseHistoryCounter = req<HTMLSpanElement>('case-history-counter');
-const caseDiscussion = req<HTMLTextAreaElement>('case-discussion');
 const caseValidation = req<HTMLSpanElement>('case-validation');
 const btnCaseReady = req<HTMLButtonElement>('btn-case-ready');
 
@@ -110,7 +103,7 @@ void inspectedTitle; void inspectedSummary; void inspectedPath;
 void caseForm;
 
 // State ---------------------------------------------------------------------
-type AppState = 'idle' | 'inspected' | 'processing' | 'done';
+type AppState = 'idle' | 'inspected' | 'processing' | 'done' | 'upload';
 
 interface PendingInspect {
   kind: 'file' | 'folder';
@@ -167,9 +160,13 @@ function setState(next: AppState): void {
   panelInspected.classList.toggle('active', next === 'inspected');
   panelProcessing.classList.toggle('active', next === 'processing');
   panelDone.classList.toggle('active', next === 'done');
+  panelUpload.classList.toggle('active', next === 'upload');
   btnReset.hidden = next === 'idle';
+  // "Add to Radiopaedia" only shown when we have a finished case.
+  btnAddCase.hidden = next !== 'done' || !studyMeta || !anonOutput;
   // Cancel button is only meaningful while a run is streaming.
   btnCancelRun.hidden = next !== 'processing' || !currentAbortController;
+  if (next === 'upload') renderUploadSeriesList();
 }
 
 function basename(p: string | null | undefined): string {
@@ -881,12 +878,6 @@ function renderStudySummary(): void {
           li.appendChild(pill);
         }
 
-        // Per-series Study form (modality + caption + findings). Stops click
-        // propagation so interacting with the form doesn't open the viewer.
-        if (se.folder) {
-          li.appendChild(buildSeriesStudyForm(se));
-        }
-
         ul.appendChild(li);
       }
 
@@ -897,19 +888,121 @@ function renderStudySummary(): void {
   }
 }
 
+// Upload-view series list ----------------------------------------------------
+// One row per series. Each row carries a checkbox (default included), a
+// thumbnail, the series description + key metadata, and the per-series Study
+// form (modality / caption / findings). Deselecting a row excludes it from
+// the upload payload and skips its modality requirement during validation.
+function renderUploadSeriesList(): void {
+  uploadSeriesListEl.innerHTML = '';
+  if (!studyMeta?.studies?.length) return;
+
+  for (let si = 0; si < studyMeta.studies.length; si++) {
+    const st = studyMeta.studies[si];
+    for (const se of st.series ?? []) {
+      if (!se.folder) continue;
+      const row = document.createElement('div');
+      row.className = 'upload-series-row';
+      row.dataset.folder = se.folder;
+      const selected = isFolderSelected(se.folder);
+      row.classList.toggle('unselected', !selected);
+
+      const check = document.createElement('input');
+      check.type = 'checkbox';
+      check.className = 'upload-row-check';
+      check.checked = selected;
+      check.addEventListener('change', () => {
+        if (!se.folder) return;
+        if (check.checked) deselectedFolders.delete(se.folder);
+        else deselectedFolders.add(se.folder);
+        row.classList.toggle('unselected', !check.checked);
+        refreshCaseFormUI();
+        persistCaseDraft();
+      });
+      row.appendChild(check);
+
+      if (se.thumbnail) {
+        const img = document.createElement('img');
+        img.className = 'upload-row-thumb';
+        img.src = se.thumbnail;
+        img.alt = se.description || 'series preview';
+        row.appendChild(img);
+      } else {
+        const ph = document.createElement('div');
+        ph.className = 'upload-row-thumb-placeholder';
+        row.appendChild(ph);
+      }
+
+      const body = document.createElement('div');
+      body.className = 'upload-row-body';
+
+      const desc = document.createElement('div');
+      desc.className = 'upload-row-desc';
+      desc.textContent = se.description || '(no description)';
+      body.appendChild(desc);
+
+      // First meta line: modality, orientation, slice thickness/spacing, count.
+      // Mirrors the format used in the Studio thumbnail meta so the user sees
+      // the same numbers they were just looking at.
+      const tech: string[] = [];
+      if (se.modality) tech.push(se.modality);
+      if (se.orientation) tech.push(se.orientation);
+      if (se.slice_thickness != null) {
+        const th = se.slice_thickness;
+        const sp = se.slice_spacing;
+        if (sp == null) tech.push(`${fmtMm(th)} mm`);
+        else if (sp > th + 0.01) tech.push(`${fmtMm(th)}+${fmtMm(sp - th)} mm`);
+        else tech.push(`${fmtMm(th)}/${fmtMm(sp)} mm`);
+      }
+      tech.push(`${se.slice_count} slice${se.slice_count === 1 ? '' : 's'}`);
+      const meta = document.createElement('div');
+      meta.className = 'upload-row-meta';
+      meta.textContent = `Study ${si + 1} · ${tech.join(' · ')}`;
+      body.appendChild(meta);
+
+      // Second meta line: stack size, per-slice size, transfer syntax.
+      const sizeBits: string[] = [];
+      if (se.total_bytes != null) {
+        sizeBits.push(humanBytes(se.total_bytes));
+        if (se.slice_count > 0) {
+          sizeBits.push(`${humanBytes(se.total_bytes / se.slice_count)}/slice`);
+        }
+      }
+      if (se.transfer_syntax?.name) sizeBits.push(se.transfer_syntax.name);
+      if (sizeBits.length) {
+        const size = document.createElement('div');
+        size.className = 'upload-row-meta';
+        size.textContent = sizeBits.join(' · ');
+        body.appendChild(size);
+      }
+
+      body.appendChild(buildSeriesStudyForm(se));
+      row.appendChild(body);
+      uploadSeriesListEl.appendChild(row);
+    }
+  }
+}
+
 // Per-series Study form ------------------------------------------------------
-// Each thumbnail card carries a small form for the Study fields: modality
-// (required for upload), caption (short label), and a rows=2 findings
-// textarea. Writes go straight into studyByFolder and re-validate the form.
+// Carries the Study fields the user can edit: modality (required) and plane
+// (free text — Radiopaedia's web form is a typeahead with axial / coronal /
+// sagittal suggestions). Writes go straight into studyByFolder and
+// re-validate the form.
 function buildSeriesStudyForm(se: SeriesSummary): HTMLDivElement {
   const folder = se.folder!;
   // Ensure we have a Study object for this folder so the controls have
-  // somewhere to write. Default-pick modality from the DICOM tag where we can.
+  // somewhere to write. Default-pick modality from the DICOM tag and seed
+  // plane from the DICOM-derived orientation where we can.
   let current = studyByFolder.get(folder);
   if (!current) {
     const guess = defaultModalityForSeries(se.modality);
-    current = { modality: (guess ?? '') as Modality };
-    if (guess) studyByFolder.set(folder, current);
+    const plane = se.orientation ? titleCase(se.orientation) : undefined;
+    current = { modality: (guess ?? '') as Modality, plane };
+    if (guess || plane) studyByFolder.set(folder, current);
+  } else if (current.plane === undefined && se.orientation) {
+    // Late-bind plane if a prior render created the Study without it.
+    current = { ...current, plane: titleCase(se.orientation) };
+    studyByFolder.set(folder, current);
   }
 
   const wrap = document.createElement('div');
@@ -948,34 +1041,29 @@ function buildSeriesStudyForm(se: SeriesSummary): HTMLDivElement {
   });
   modLabel.appendChild(modSelect);
 
-  const capLabel = document.createElement('label');
-  capLabel.textContent = 'Caption';
-  const capInput = document.createElement('input');
-  capInput.type = 'text';
-  capInput.placeholder = 'optional caption';
-  capInput.value = current.caption ?? '';
-  capInput.addEventListener('input', () => {
+  // Plane — free text with typeahead suggestions, matching Radiopaedia's UI.
+  const planeLabel = document.createElement('label');
+  planeLabel.textContent = 'Plane';
+  const planeInput = document.createElement('input');
+  planeInput.type = 'text';
+  planeInput.className = 'series-plane';
+  planeInput.placeholder = 'e.g. Axial';
+  planeInput.setAttribute('list', 'series-plane-options');
+  planeInput.value = current.plane ?? '';
+  planeInput.addEventListener('input', () => {
     const existing = studyByFolder.get(folder) ?? { modality: '' as Modality };
-    studyByFolder.set(folder, { ...existing, caption: capInput.value });
+    studyByFolder.set(folder, { ...existing, plane: planeInput.value });
     persistCaseDraft();
   });
-  capLabel.appendChild(capInput);
+  planeLabel.appendChild(planeInput);
 
-  const findLabel = document.createElement('label');
-  findLabel.textContent = 'Findings';
-  const findArea = document.createElement('textarea');
-  findArea.rows = 2;
-  findArea.placeholder = 'imaging findings (optional)';
-  findArea.value = current.findings ?? '';
-  findArea.addEventListener('input', () => {
-    const existing = studyByFolder.get(folder) ?? { modality: '' as Modality };
-    studyByFolder.set(folder, { ...existing, findings: findArea.value });
-    persistCaseDraft();
-  });
-  findLabel.appendChild(findArea);
-
-  wrap.append(modLabel, capLabel, findLabel);
+  wrap.append(modLabel, planeLabel);
   return wrap;
+}
+
+function titleCase(s: string): string {
+  if (!s) return '';
+  return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
 }
 
 // Inspect -------------------------------------------------------------------
@@ -1277,7 +1365,7 @@ btnReset.addEventListener('click', () => {
   // title/history into the next study the user drops in.
   clearCaseDraft();
   resetCaseForm();
-  caseDetails.hidden = true;
+  uploadSeriesListEl.innerHTML = '';
   setState('idle');
 });
 
@@ -1286,14 +1374,14 @@ btnRevealMain.addEventListener('click', () => {
 });
 
 // Case metadata form --------------------------------------------------------
-// The Case form lives in a <details> below the study summary. Per-series
-// Study forms (modality + caption + findings) are inline under each thumbnail
-// — see the renderStudySummary path. We keep Studies in a Map keyed by the
-// series' anonymised folder; the folder is a stable primary key between renders
-// and is the only thing that survives a /scan re-run.
+// The Case form lives in panel-upload (reached via "Add to Radiopaedia" from
+// the Done panel). Per-series Study forms sit inside each upload-series row —
+// see renderUploadSeriesList. Studies are keyed by the series' anonymised
+// folder; that's the stable primary key between renders and the only thing
+// that survives a /scan re-run.
 
 const CASE_DRAFT_KEY = 'radiopaedia-studio:case-draft';
-const CASE_DRAFT_VERSION = 2; // bumped when Case shape changed for #12.
+const CASE_DRAFT_VERSION = 3; // bumped when selected[] added for upload-series picker.
 
 type CaseFormShape = Omit<Case, 'source_summary' | 'output_root'>;
 
@@ -1301,10 +1389,18 @@ interface CaseDraft {
   v: number;
   case: CaseFormShape;
   studies: Array<[string, Study]>; // [folder, Study]
+  deselected?: string[]; // folders the user excluded from the upload
 }
 
 // Per-series Study state, keyed by the series folder.
 const studyByFolder = new Map<string, Study>();
+
+// Folders the user has chosen NOT to upload. We store deselections rather than
+// selections so newly-discovered series default to included.
+const deselectedFolders = new Set<string>();
+function isFolderSelected(folder: string): boolean {
+  return !deselectedFolders.has(folder);
+}
 
 function emptyCaseForm(): CaseFormShape {
   return {
@@ -1325,44 +1421,19 @@ function populateCaseSelects(): void {
     o.textContent = opt.name;
     caseSystem.appendChild(o);
   }
-  for (const opt of DIAGNOSTIC_CERTAINTY_OPTIONS) {
-    const o = document.createElement('option');
-    o.value = String(opt.id);
-    o.textContent = opt.name;
-    caseCertainty.appendChild(o);
-  }
-}
-
-function readSexRadio(): CaseSex | null {
-  const el = caseSexGroup.querySelector<HTMLInputElement>('input[name="case-sex"]:checked');
-  if (!el) return null;
-  const v = el.value;
-  if (v === 'M' || v === 'F' || v === 'O') return v;
-  return null;
-}
-
-function writeSexRadio(value: CaseSex | null): void {
-  for (const r of caseSexGroup.querySelectorAll<HTMLInputElement>('input[name="case-sex"]')) {
-    r.checked = r.value === value;
-  }
 }
 
 function readCaseForm(): CaseFormShape {
   const systemIdStr = caseSystem.value;
   const systemId = systemIdStr ? parseInt(systemIdStr, 10) : NaN;
-  const certaintyStr = caseCertainty.value;
-  const certaintyId = certaintyStr ? parseInt(certaintyStr, 10) : NaN;
-  const form: CaseFormShape = {
+  return {
     title: caseTitle.value.trim(),
     system_id: Number.isFinite(systemId) ? systemId : null,
-    age: caseAge.value.trim() || null,
-    patient_sex: readSexRadio(),
-    clinical_history: caseClinicalHistory.value,
-    case_discussion: caseDiscussion.value,
+    age: null,
+    patient_sex: null,
+    clinical_history: '',
+    case_discussion: '',
   };
-  if (Number.isFinite(certaintyId)) form.diagnostic_certainty_id = certaintyId;
-  if (caseQuiz.checked) form.suitable_for_quiz = true;
-  return form;
 }
 
 function writeCaseForm(data: Partial<CaseFormShape>): void {
@@ -1370,17 +1441,6 @@ function writeCaseForm(data: Partial<CaseFormShape>): void {
   if (data.system_id !== undefined) {
     caseSystem.value = data.system_id != null ? String(data.system_id) : '';
   }
-  if (data.age !== undefined) caseAge.value = data.age ?? '';
-  if (data.patient_sex !== undefined) writeSexRadio(data.patient_sex ?? null);
-  if (data.diagnostic_certainty_id !== undefined) {
-    caseCertainty.value = data.diagnostic_certainty_id != null
-      ? String(data.diagnostic_certainty_id) : '';
-  }
-  if (data.suitable_for_quiz !== undefined) {
-    caseQuiz.checked = !!data.suitable_for_quiz;
-  }
-  if (data.clinical_history !== undefined) caseClinicalHistory.value = data.clinical_history ?? '';
-  if (data.case_discussion !== undefined) caseDiscussion.value = data.case_discussion ?? '';
 }
 
 function updateCounter(
@@ -1402,6 +1462,7 @@ function collectStudies(): Array<{ folder: string; study: Study }> {
   for (const st of studyMeta.studies) {
     for (const se of st.series ?? []) {
       if (!se.folder) continue;
+      if (!isFolderSelected(se.folder)) continue;
       const s = studyByFolder.get(se.folder);
       if (s) out.push({ folder: se.folder, study: s });
     }
@@ -1420,10 +1481,13 @@ function validateCaseForm(): { ok: boolean; message: string } {
   caseSystem.classList.toggle('invalid', !Number.isFinite(systemId));
   if (!Number.isFinite(systemId)) return { ok: false, message: 'Pick a system.' };
 
-  // Every series must have a modality picked.
-  const series = (studyMeta?.studies ?? []).flatMap((st) => st.series ?? []).filter((s) => s.folder);
+  // Every SELECTED series must have a modality picked. Deselected series are
+  // excluded from the upload, so we don't validate them.
+  const series = (studyMeta?.studies ?? [])
+    .flatMap((st) => st.series ?? [])
+    .filter((s) => s.folder && isFolderSelected(s.folder));
   if (series.length === 0) {
-    return { ok: false, message: 'No series to upload.' };
+    return { ok: false, message: 'Select at least one series to upload.' };
   }
   for (const se of series) {
     const s = se.folder ? studyByFolder.get(se.folder) : undefined;
@@ -1439,14 +1503,17 @@ function validateCaseForm(): { ok: boolean; message: string } {
 
 function refreshCaseFormUI(): void {
   updateCounter(caseTitleCounter, caseTitle.value, CASE_TITLE_MAX);
-  updateCounter(caseHistoryCounter, caseClinicalHistory.value, CASE_CLINICAL_HISTORY_MAX);
   const v = validateCaseForm();
   caseValidation.textContent = v.message;
   caseValidation.classList.toggle('error', !v.ok);
   btnCaseReady.disabled = !v.ok;
-  // Reflect per-series validity on any open select.
-  for (const sel of studySummaryEl.querySelectorAll<HTMLSelectElement>('.series-modality')) {
-    sel.classList.toggle('invalid', sel.value === '');
+  // Reflect per-series validity on any open select. Selects live inside the
+  // upload-series rows; only flag rows that are actually selected for upload.
+  for (const sel of uploadSeriesListEl.querySelectorAll<HTMLSelectElement>('.series-modality')) {
+    const row = sel.closest<HTMLDivElement>('.upload-series-row');
+    const folder = row?.dataset.folder ?? '';
+    const selected = folder ? isFolderSelected(folder) : true;
+    sel.classList.toggle('invalid', selected && sel.value === '');
   }
 }
 
@@ -1456,6 +1523,7 @@ function persistCaseDraft(): void {
       v: CASE_DRAFT_VERSION,
       case: readCaseForm(),
       studies: Array.from(studyByFolder.entries()),
+      deselected: Array.from(deselectedFolders),
     };
     sessionStorage.setItem(CASE_DRAFT_KEY, JSON.stringify(payload));
   } catch { /* storage full / disabled — drop silently */ }
@@ -1485,6 +1553,7 @@ function clearCaseDraft(): void {
 function resetCaseForm(): void {
   writeCaseForm(emptyCaseForm());
   studyByFolder.clear();
+  deselectedFolders.clear();
   refreshCaseFormUI();
 }
 
@@ -1493,18 +1562,12 @@ function resetCaseForm(): void {
 // user hasn't already touched (existing values win over derived ones, so a
 // reload doesn't clobber in-progress edits).
 function hydrateCaseForm(summary: SummaryPayload | null, outputRoot: string | null): void {
-  caseDetails.hidden = !(summary && outputRoot);
   if (!summary || !outputRoot) return;
 
   const derived = deriveDefaultCase(summary, outputRoot);
   const draft = restoreCaseDraft();
   const current = readCaseForm();
-  const hasAnyCurrentInput = !!(
-    current.title || current.clinical_history
-    || current.case_discussion
-    || current.system_id != null
-    || current.age || current.patient_sex
-  );
+  const hasAnyCurrentInput = !!(current.title || current.system_id != null);
 
   // Priority: existing in-memory input > sessionStorage draft > derived.
   const seed: Partial<CaseFormShape> = {
@@ -1519,6 +1582,20 @@ function hydrateCaseForm(summary: SummaryPayload | null, outputRoot: string | nu
   if (draft?.studies) {
     for (const [folder, study] of draft.studies) {
       studyByFolder.set(folder, { ...study });
+    }
+  }
+  // Restore selection state. Only retain deselections for folders that still
+  // exist in the current summary, so stale entries can't quietly drop a series.
+  deselectedFolders.clear();
+  if (draft?.deselected) {
+    const liveFolders = new Set<string>();
+    for (const st of summary.studies ?? []) {
+      for (const se of st.series ?? []) {
+        if (se.folder) liveFolders.add(se.folder);
+      }
+    }
+    for (const folder of draft.deselected) {
+      if (liveFolders.has(folder)) deselectedFolders.add(folder);
     }
   }
   for (const st of summary.studies ?? []) {
@@ -1539,11 +1616,8 @@ function hydrateCaseForm(summary: SummaryPayload | null, outputRoot: string | nu
 populateCaseSelects();
 resetCaseForm();
 
-// Live validation + counters + draft persistence for the case-form side.
-for (const el of [
-  caseTitle, caseSystem, caseAge, caseCertainty, caseQuiz,
-  caseClinicalHistory, caseDiscussion,
-] as HTMLElement[]) {
+// Live validation + draft persistence for the case-form side.
+for (const el of [caseTitle, caseSystem] as HTMLElement[]) {
   el.addEventListener('input', () => {
     refreshCaseFormUI();
     persistCaseDraft();
@@ -1553,14 +1627,16 @@ for (const el of [
     persistCaseDraft();
   });
 }
-// Sex radios need their own hook (radios fire 'change', not 'input', when
-// keyboard-toggled; bind both for safety).
-for (const r of caseSexGroup.querySelectorAll<HTMLInputElement>('input[name="case-sex"]')) {
-  r.addEventListener('change', () => {
-    refreshCaseFormUI();
-    persistCaseDraft();
-  });
-}
+
+btnAddCase.addEventListener('click', () => {
+  if (!studyMeta || !anonOutput) return;
+  setState('upload');
+  refreshCaseFormUI();
+});
+
+btnUploadBack.addEventListener('click', () => {
+  setState('done');
+});
 
 btnCaseReady.addEventListener('click', () => {
   const v = validateCaseForm();
@@ -1598,6 +1674,9 @@ if (bootDraft) {
   writeCaseForm(bootDraft.case);
   for (const [folder, study] of bootDraft.studies) {
     studyByFolder.set(folder, { ...study });
+  }
+  if (bootDraft.deselected) {
+    for (const f of bootDraft.deselected) deselectedFolders.add(f);
   }
   refreshCaseFormUI();
 }
