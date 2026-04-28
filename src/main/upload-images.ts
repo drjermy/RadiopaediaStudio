@@ -12,7 +12,8 @@
 // can stream events into its modal. Abortable via an AbortSignal.
 
 import { createHash } from 'node:crypto';
-import { readFile, readdir, stat } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rm, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getValidAccessToken } from './radiopaedia-auth';
 import { RADIOPAEDIA_API_BASE } from './radiopaedia-config';
@@ -38,7 +39,7 @@ export interface ImageUploadSpec {
   }>;
 }
 
-export type UploadPhase = 'hash' | 'presign' | 'upload' | 'prepare';
+export type UploadPhase = 'stage' | 'hash' | 'presign' | 'upload' | 'prepare';
 
 export type UploadEvent =
   | { type: 'budget'; totalBytes: number; totalFiles: number }
@@ -83,10 +84,25 @@ interface DiscoveredSeries {
   totalBytes: number;
 }
 
+export interface RunImageUploadOptions {
+  /**
+   * Port the Node sidecar is listening on. Required: every file destined
+   * for Radiopaedia must be re-anonymised through dicomanon (Radiopaedia's
+   * canonical anonymiser) before upload, even if it already came out of
+   * the original /anonymize step — derived series produced by Python ops
+   * like /reformat / /window / /transform don't carry the markers
+   * Radiopaedia's validator requires (e.g. "Was not anonymized, Key
+   * 00080018 not anonymized" 422s). Staging through dicomanon makes the
+   * upload uniform regardless of how a series was produced.
+   */
+  nodeBackendPort: number;
+}
+
 export async function runImageUpload(
   spec: ImageUploadSpec,
   emit: EmitFn,
   signal: AbortSignal,
+  options: RunImageUploadOptions,
 ): Promise<void> {
   if (signal.aborted) {
     emit({ type: 'aborted' });
@@ -98,6 +114,112 @@ export async function runImageUpload(
   }
 
   const apiBase = RADIOPAEDIA_API_BASE;
+
+  // Stage every series through dicomanon into a temp folder. Replaces the
+  // spec's series.folder with the staged path so all downstream steps —
+  // discovery, hashing, S3 upload — operate on the anonymised copy.
+  // Cleaned up in the finally block at the bottom of the function.
+  const stagingRoot = join(tmpdir(), `radiopaedia-stage-${Date.now()}-${process.pid}`);
+  await mkdir(stagingRoot, { recursive: true });
+  try {
+    await stageAllSeries(spec, options.nodeBackendPort, stagingRoot, emit, signal);
+    if (signal.aborted) { emit({ type: 'aborted' }); return; }
+    await runUploadAfterStaging(spec, apiBase, () => requireToken(token),
+      async () => { token = await getValidAccessToken(); }, emit, signal);
+  } finally {
+    await rm(stagingRoot, { recursive: true, force: true }).catch(() => { /* cleanup is best-effort */ });
+  }
+}
+
+async function stageAllSeries(
+  spec: ImageUploadSpec,
+  nodeBackendPort: number,
+  stagingRoot: string,
+  emit: EmitFn,
+  signal: AbortSignal,
+): Promise<void> {
+  let stageIdx = 0;
+  for (let si = 0; si < spec.studies.length; si++) {
+    const studyEntry = spec.studies[si];
+    for (let xi = 0; xi < studyEntry.series.length; xi++) {
+      if (signal.aborted) return;
+      const series = studyEntry.series[xi];
+      const stagedFolder = join(stagingRoot, String(stageIdx++));
+      emit({ type: 'series-progress', studyIdx: si, seriesIdx: xi, phase: 'stage', done: 0, total: 1 });
+      try {
+        await stageOneSeries(nodeBackendPort, series.folder, stagedFolder, signal, (done, total) => {
+          emit({ type: 'series-progress', studyIdx: si, seriesIdx: xi, phase: 'stage', done, total });
+        });
+      } catch (e) {
+        if (signal.aborted) return;
+        const msg = describeError(e);
+        emit({ type: 'series-error', studyIdx: si, seriesIdx: xi, message: `staging failed: ${msg}` });
+        throw e;
+      }
+      // Mutate the spec to point downstream steps at the anonymised copy.
+      series.folder = stagedFolder;
+    }
+  }
+}
+
+async function stageOneSeries(
+  nodeBackendPort: number,
+  sourceFolder: string,
+  stageFolder: string,
+  signal: AbortSignal,
+  onProgress: (done: number, total: number) => void,
+): Promise<void> {
+  await mkdir(stageFolder, { recursive: true });
+  const url = `http://127.0.0.1:${nodeBackendPort}/anonymize`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ input: sourceFolder, output: stageFolder }),
+    signal,
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new HttpError(`POST /anonymize`, res.status, body);
+  }
+  if (!res.body) throw new Error('no anonymize response body');
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+  let done = 0;
+  let total = 0;
+  while (true) {
+    if (signal.aborted) return;
+    const { value, done: streamDone } = await reader.read();
+    if (streamDone) break;
+    buffer += decoder.decode(value, { stream: true });
+    let idx: number;
+    while ((idx = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, idx).trim();
+      buffer = buffer.slice(idx + 1);
+      if (!line) continue;
+      const evt = JSON.parse(line) as { type: string; total?: number; error?: string; input?: string };
+      if (evt.type === 'start') {
+        total = evt.total ?? 0;
+        if (total > 0) onProgress(0, total);
+      } else if (evt.type === 'file') {
+        done += 1;
+        onProgress(done, total || done);
+      } else if (evt.type === 'error') {
+        throw new Error(`anonymize error on ${evt.input ?? '<unknown>'}: ${evt.error ?? 'unspecified'}`);
+      }
+    }
+  }
+}
+
+async function runUploadAfterStaging(
+  spec: ImageUploadSpec,
+  apiBase: string,
+  token: () => string,
+  refreshToken: () => Promise<void>,
+  emit: EmitFn,
+  signal: AbortSignal,
+): Promise<void> {
 
   // Discovery pass: list each series' files and stat their sizes so we
   // can publish a byte budget up front. The renderer uses this to drive
@@ -160,8 +282,8 @@ export async function runImageUpload(
           series,
           discovery,
           bumpBytes,
-          token: () => requireToken(token),
-          refreshToken: async () => { token = await getValidAccessToken(); },
+          token,
+          refreshToken,
           emit,
           signal,
         });
@@ -184,7 +306,7 @@ export async function runImageUpload(
   try {
     await apiFetch(apiBase, '/api/v1/cases/' + spec.caseId + '/mark_upload_finished', {
       method: 'PUT',
-      token: requireToken(token),
+      token: token(),
       signal,
     });
     emit({ type: 'finalize-done' });

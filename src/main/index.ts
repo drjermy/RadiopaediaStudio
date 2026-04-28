@@ -187,12 +187,17 @@ app.whenReady().then(async () => {
       if (uploadAbort) {
         return { status: 'error', message: 'Another upload is already running.' };
       }
+      if (!nodeBackend?.port) {
+        return { status: 'error', message: 'Node sidecar (anonymiser) is not running — restart the app.' };
+      }
       uploadAbort = new AbortController();
       const emit = (e: UploadEvent): void => {
         mainWindow?.webContents.send('upload:event', e);
       };
       try {
-        await runImageUpload(spec, emit, uploadAbort.signal);
+        await runImageUpload(spec, emit, uploadAbort.signal, {
+          nodeBackendPort: nodeBackend.port,
+        });
         return { status: 'ok' };
       } catch (err) {
         if (uploadAbort?.signal.aborted) return { status: 'aborted' };

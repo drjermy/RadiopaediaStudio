@@ -64,7 +64,7 @@ interface UploadStartSpec {
 }
 type UploadStartResult = { status: 'ok' | 'error' | 'aborted'; message?: string };
 
-type UploadPhase = 'hash' | 'presign' | 'upload' | 'prepare';
+type UploadPhase = 'stage' | 'hash' | 'presign' | 'upload' | 'prepare';
 type UploadEventPayload =
   | { type: 'budget'; totalBytes: number; totalFiles: number }
   | { type: 'bytes-progress'; doneBytes: number; totalBytes: number }

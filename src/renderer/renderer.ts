@@ -2331,7 +2331,7 @@ type _UploadEventPayload =
   | { type: 'budget'; totalBytes: number; totalFiles: number }
   | { type: 'bytes-progress'; doneBytes: number; totalBytes: number }
   | { type: 'series-start'; studyIdx: number; seriesIdx: number; folder: string; sliceCount: number }
-  | { type: 'series-progress'; studyIdx: number; seriesIdx: number; phase: 'hash' | 'presign' | 'upload' | 'prepare'; done: number; total: number }
+  | { type: 'series-progress'; studyIdx: number; seriesIdx: number; phase: 'stage' | 'hash' | 'presign' | 'upload' | 'prepare'; done: number; total: number }
   | { type: 'series-done'; studyIdx: number; seriesIdx: number }
   | { type: 'series-error'; studyIdx: number; seriesIdx: number; message: string }
   | { type: 'finalize-start' }
@@ -2361,7 +2361,8 @@ function handleUploadEvent(e: _UploadEventPayload): void {
         `study ${e.studyIdx + 1}, series ${e.seriesIdx + 1} — ${e.sliceCount} slice${e.sliceCount === 1 ? '' : 's'}`);
       break;
     case 'series-progress': {
-      const phase = e.phase === 'hash' ? 'hashing'
+      const phase = e.phase === 'stage' ? 'anonymising'
+        : e.phase === 'hash' ? 'hashing'
         : e.phase === 'presign' ? 'presigning'
         : e.phase === 'upload' ? 'uploading'
         : 'preparing';
