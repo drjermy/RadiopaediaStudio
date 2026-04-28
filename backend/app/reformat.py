@@ -48,6 +48,68 @@ _TEMPLATE_TAGS = (
 )
 
 
+def _resample_bilinear(img: np.ndarray, new_shape: tuple[int, int]) -> np.ndarray:
+    """Bilinear resample of a 2D array to new_shape (rows, cols).
+
+    Hand-rolled with numpy so we don't drag scipy / PIL into the backend's
+    PyInstaller bundle for one operation. Bilinear is sufficient for what
+    we're after (correcting display aspect ratio on Radiopaedia / QuickLook
+    that ignore PixelSpacing) — the alternative is anisotropic pixels which
+    those tools render at the wrong shape entirely.
+    """
+    h, w = img.shape
+    nh, nw = new_shape
+    if (nh, nw) == (h, w):
+        return img
+    row_idx = np.linspace(0, h - 1, nh, dtype=np.float32)
+    col_idx = np.linspace(0, w - 1, nw, dtype=np.float32)
+    r0 = np.floor(row_idx).astype(np.int32)
+    r1 = np.minimum(r0 + 1, h - 1)
+    rf = (row_idx - r0)[:, None]
+    c0 = np.floor(col_idx).astype(np.int32)
+    c1 = np.minimum(c0 + 1, w - 1)
+    cf = (col_idx - c0)[None, :]
+    a = img[r0[:, None], c0[None, :]].astype(np.float32)
+    b = img[r0[:, None], c1[None, :]].astype(np.float32)
+    c = img[r1[:, None], c0[None, :]].astype(np.float32)
+    d = img[r1[:, None], c1[None, :]].astype(np.float32)
+    return ((1 - rf) * (1 - cf) * a
+          + (1 - rf) * cf * b
+          + rf * (1 - cf) * c
+          + rf * cf * d)
+
+
+def make_isotropic(
+    images: list[np.ndarray],
+    pixel_spacing: tuple[float, float],
+) -> tuple[list[np.ndarray], tuple[float, float]]:
+    """Ensure reformat output has square pixels.
+
+    Cross-plane reformats (e.g. coronal of an axial CT) come out
+    anisotropic — for an axial CT with dz=2mm and dx=0.6mm the coronal
+    output has PixelSpacing (2, 0.6) and pixel-aspect 2:0.6 wide vs
+    physical 0.6:2 tall. Tools that ignore PixelSpacing
+    (macOS QuickLook, and apparently Radiopaedia's PNG converter) render
+    at pixel-aspect, so the image looks stretched and small.
+
+    We resample to the *finer* of the two source spacings (upsample the
+    coarser axis). That preserves in-plane detail at the cost of larger
+    files; downsampling would shrink files but throw away pixel detail
+    that comes from the source acquisition. For educational case display
+    the trade-off is clear: keep the detail.
+
+    No-op when input is already isotropic.
+    """
+    rs, cs = pixel_spacing
+    if abs(rs - cs) < 1e-3:
+        return images, (rs, cs)
+    target = min(rs, cs)
+    h, w = images[0].shape
+    nh = max(1, int(round(h * rs / target)))
+    nw = max(1, int(round(w * cs / target)))
+    return [_resample_bilinear(img, (nh, nw)) for img in images], (target, target)
+
+
 def _ds(v: float) -> str:
     """Format a float as a DICOM Decimal String (DS) — VR limit is 16 chars.
 
@@ -323,6 +385,11 @@ def iter_reformat_series(input_dir: Path, output_dir: Path, orientation: str,
             yield {'type': 'error', 'error':
                    f'slab thickness ({thickness}mm) exceeds volume extent along {orientation}'}
             return
+
+        # Resample to isotropic pixel spacing so downstream renderers that
+        # ignore PixelSpacing (macOS QuickLook, Radiopaedia's PNG converter)
+        # display at the right physical aspect ratio.
+        images, pixel_spacing = make_isotropic(images, pixel_spacing)
 
         yield {'type': 'total', 'total': len(images)}
         for written_path in iter_write_series(
