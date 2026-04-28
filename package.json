@@ -12,15 +12,18 @@
     "build:frontend": "npm run codegen:radiopaedia-config && tsc -p tsconfig.json && npm run build:renderer && npm run build:viewer",
     "build": "npm run build:frontend",
     "dev": "npm run build:frontend && electron .",
-    "test": "node --test test/",
+    "test": "node --test test/*.test.mjs",
+    "test:e2e": "npm run build:frontend && playwright test",
     "pack": "npm run build:backend && npm run build:node && npm run build:frontend && electron-builder --mac --dir",
     "dist": "npm run build:backend && npm run build:node && npm run build:frontend && electron-builder --mac"
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
     "@types/node": "^20.11.0",
     "electron": "^30.0.0",
     "electron-builder": "^24.13.3",
     "esbuild": "^0.28.0",
+    "playwright": "^1.59.1",
     "typescript": "^5.4.0"
   },
   "dependencies": {

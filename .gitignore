@@ -45,3 +45,8 @@ src/main/radiopaedia-config.ts
 # access token on every run. Contains a live access_token + refresh_token —
 # never commit.
 .radiopaedia-tokens.json
+
+# Playwright E2E artefacts.
+test-results/
+playwright-report/
+playwright/.cache/
