@@ -21,6 +21,7 @@ import pydicom
 from pydicom.dataset import Dataset, FileMetaDataset
 from pydicom.uid import ExplicitVRLittleEndian, generate_uid
 
+from app.compress import encode_jpeg2000
 from app.logsafe import redact_error_message
 
 
@@ -331,6 +332,11 @@ def iter_write_series(images: list[np.ndarray], positions: list[np.ndarray], iop
 
         ds.PixelData = img.tobytes()
 
+        # Reformats are isotropically resampled (see make_isotropic) which
+        # ~3× the per-slice byte count vs source axials. JPEG 2000 lossless
+        # gives back ~5× compression on CT data, taking the per-slice cost
+        # below source. Pixel data round-trips byte-for-byte (lossless), so
+        # quality is unchanged for any downstream viewer.
         file_meta = FileMetaDataset()
         file_meta.MediaStorageSOPClassUID = ds.SOPClassUID
         file_meta.MediaStorageSOPInstanceUID = ds.SOPInstanceUID
@@ -338,6 +344,9 @@ def iter_write_series(images: list[np.ndarray], positions: list[np.ndarray], iop
         ds.file_meta = file_meta
         ds.is_little_endian = True
         ds.is_implicit_VR = False
+        # ds.compress() rewrites PixelData as encapsulated J2K and updates
+        # the file_meta TransferSyntaxUID accordingly.
+        encode_jpeg2000(ds)
 
         out_path = output_dir / f'slice{idx:04d}.dcm'
         pydicom.dcmwrite(str(out_path), ds, enforce_file_format=True)
