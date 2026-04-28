@@ -1923,8 +1923,7 @@ function showUploadPreview(
     endpoints.push(
       `POST /direct_s3_uploads  (×${totalSeries}, one per series stack)`,
       `PUT  <S3 presigned URL>  (×N, one per DICOM slice)`,
-      `POST /image_preparation/:case_id/studies/:study_id/series  (×${totalSeries})`,
-      `PATCH /image_preparation/:case_id/studies/:study_id/series/:series_id  (perspective + specifics)`,
+      `POST /image_preparation/:case_id/studies/:study_id/series  (×${totalSeries}, body carries root_index + perspective + specifics)`,
     );
   }
   endpoints.push('PUT  /api/v1/cases/:case_id/mark_upload_finished');
@@ -1945,17 +1944,34 @@ function showUploadPreview(
       study,
       false,
     );
-    if (series.length > 0) {
+    series.forEach((s, j) => {
       appendPayload(
         uploadPreviewPayloads,
-        `Series under study ${i + 1} — perspective + specifics (sent on image_preparation)`,
-        series,
+        `POST /image_preparation/.../series — study ${i + 1}, series ${j + 1}`,
+        buildImagePreparationPreview(s),
         false,
       );
-    }
+    });
   }
 
   uploadPreview.hidden = false;
+}
+
+// Best-guess shape for the image_preparation create body, for preview only.
+// Real values for `stack_upload.uploaded_data` come from /direct_s3_uploads
+// once the live upload is wired; we fill placeholders so the structure is
+// visible. `root_index` defaults to 0 (first slice) — the user can change
+// this once we surface a control for it.
+function buildImagePreparationPreview(s: Series): Record<string, unknown> {
+  const seriesBody: Record<string, unknown> = { root_index: 0 };
+  if (s.perspective?.trim()) seriesBody.perspective = s.perspective.trim();
+  if (s.specifics?.trim()) seriesBody.specifics = s.specifics.trim();
+  return {
+    image_format: 'application/dicom',
+    series: seriesBody,
+    stack_upload: { uploaded_data: ['<upload_id_1>', '<upload_id_2>', '…'] },
+    _source_folder: s.folder,
+  };
 }
 
 function appendPayload(
