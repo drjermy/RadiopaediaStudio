@@ -751,6 +751,12 @@ document.addEventListener('viewer:state', (e) => {
     if (slabThickness != null && slabSpacing != null) {
       bits.push(`<span class="k">Thickness</span><span class="v">${thicknessLabel({ slabThickness, slabSpacing, isAtNative })}</span>`);
     }
+    // Predicted slice count for the slab settings in play. Mirrors the
+    // formula the backend reformat uses, so the user sees the size of
+    // the series that Save would produce before committing.
+    if (e.detail.predictedSliceCount != null) {
+      bits.push(`<span class="k">Slices</span><span class="v">${e.detail.predictedSliceCount}</span>`);
+    }
   } else {
     bits.push('<span class="k">Mode</span><span class="v">stack</span>');
     // Stack mode (typically a derived series) — the volume controls aren't

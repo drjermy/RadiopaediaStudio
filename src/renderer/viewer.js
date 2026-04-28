@@ -129,6 +129,36 @@ function emitState() {
     ? currentOrientation === defaultOrientation && atNative
     : true;
 
+  // When viewing a volume, predict how many output slices a Save with the
+  // current slab settings would produce — extent of the volume along the
+  // current view axis, divided by the slab spacing (matches the formula in
+  // backend/app/reformat.py: floor((extent - thickness) / spacing) + 1).
+  // Renderer surfaces this so the user knows the cost of the slab choice
+  // before committing.
+  let predictedSliceCount = null;
+  let volumeExtentMm = null;
+  if (currentIsVolume && currentVolumeId) {
+    try {
+      const v = cornerstone.cache.getVolume(currentVolumeId);
+      const dims = v?.dimensions;     // [nx, ny, nz] voxels
+      const spacing = v?.spacing;     // [dx, dy, dz] mm
+      if (dims && spacing) {
+        // Cornerstone's volume axes are world-aligned (X=L-R, Y=A-P, Z=S-I).
+        // axial scrolls along Z, coronal along Y, sagittal along X.
+        const axisIndex =
+          currentOrientation === OrientationAxis.CORONAL  ? 1
+          : currentOrientation === OrientationAxis.SAGITTAL ? 0
+          : 2;
+        volumeExtentMm = dims[axisIndex] * spacing[axisIndex];
+        if (slabThickness < volumeExtentMm && slabSpacing > 0) {
+          predictedSliceCount = Math.floor((volumeExtentMm - slabThickness) / slabSpacing) + 1;
+        } else {
+          predictedSliceCount = 1; // slab spans the whole volume → MIP-style single slice
+        }
+      }
+    } catch { /* volume might be mid-load — leave fields null */ }
+  }
+
   document.dispatchEvent(new CustomEvent('viewer:state', {
     detail: {
       isVolume: currentIsVolume,
@@ -143,6 +173,8 @@ function emitState() {
       center,
       width,
       isDefaultVOI,
+      predictedSliceCount,
+      volumeExtentMm,
     },
   }));
 }

@@ -119,6 +119,10 @@ export interface ViewerStateDetail {
   center: number | null;
   width: number | null;
   isDefaultVOI: boolean;
+  /** Number of output slices a Save would produce at the current slab — null if not a volume / volume not ready. */
+  predictedSliceCount: number | null;
+  /** Volume extent along the current view axis in mm — useful context for thickness vs spacing decisions. */
+  volumeExtentMm: number | null;
 }
 
 declare global {
