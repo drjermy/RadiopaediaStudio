@@ -95,19 +95,38 @@ app.whenReady().then(async () => {
   const roots = {
     projectRoot,
     resourcesPath: process.resourcesPath,
+    userDataPath: app.getPath('userData'),
     isPackaged: app.isPackaged,
   };
-  try {
-    [backend, nodeBackend] = await Promise.all([
-      startBackend(roots),
-      startNodeSidecar(roots),
-    ]);
-    console.log(`[main] python ready on ${backend.port}, node ready on ${nodeBackend.port}`);
-  } catch (e) {
-    console.error('[main] failed to start backends:', e);
+  // allSettled (not all) so we can clean up the sibling sidecar if one start
+  // fails. Promise.all would reject on first failure with the other still
+  // mid-spawn — its handle was never assigned, so before-quit could not
+  // reach it and the process leaked into Activity Monitor.
+  const [pyResult, nodeResult] = await Promise.allSettled([
+    startBackend(roots),
+    startNodeSidecar(roots),
+  ]);
+  if (pyResult.status === 'fulfilled') backend = pyResult.value;
+  if (nodeResult.status === 'fulfilled') nodeBackend = nodeResult.value;
+  if (pyResult.status === 'rejected' || nodeResult.status === 'rejected') {
+    if (pyResult.status === 'rejected') {
+      console.error('[main] python sidecar failed to start:', pyResult.reason);
+    }
+    if (nodeResult.status === 'rejected') {
+      console.error('[main] node sidecar failed to start:', nodeResult.reason);
+    }
+    if (backend) {
+      stopBackend(backend);
+      backend = null;
+    }
+    if (nodeBackend) {
+      stopNodeSidecar(nodeBackend);
+      nodeBackend = null;
+    }
     app.quit();
     return;
   }
+  console.log(`[main] python ready on ${backend!.port}, node ready on ${nodeBackend!.port}`);
 
   ipcMain.handle('backend:port', () => backend?.port ?? null);
   ipcMain.handle('nodeBackend:port', () => nodeBackend?.port ?? null);

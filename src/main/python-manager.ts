@@ -2,11 +2,24 @@ import { ChildProcess, spawn } from 'child_process';
 import { existsSync } from 'fs';
 import { createServer } from 'net';
 import * as path from 'path';
+import {
+  reapStaleSidecar,
+  removeSidecarPidfile,
+  writeSidecarPid,
+} from './sidecar-pidfile';
 
 export interface BackendHandle {
   port: number;
   process: ChildProcess;
+  pidfilePath: string;
 }
+
+// Substring matched against the sidecar's `ps -o command=` output to confirm
+// a reaped PID is really ours before we kill it. Distinct from the Node
+// sidecar marker so cross-killing can't happen.
+const PYTHON_SIDECAR_MARKER_PACKAGED = 'radiopaedia-studio-backend';
+const PYTHON_SIDECAR_MARKER_DEV = 'app.main';
+const PIDFILE_NAME = 'python-sidecar.pid';
 
 async function pickFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -43,6 +56,7 @@ async function waitForHealth(port: number, timeoutMs = 15000): Promise<void> {
 export interface BackendRoots {
   projectRoot: string;
   resourcesPath: string;
+  userDataPath: string;
   isPackaged: boolean;
 }
 
@@ -88,6 +102,12 @@ function resolveBackend(roots: BackendRoots, port: number): BackendLauncher {
 }
 
 export async function startBackend(roots: BackendRoots): Promise<BackendHandle> {
+  const pidfilePath = path.join(roots.userDataPath, PIDFILE_NAME);
+  const marker = roots.isPackaged
+    ? PYTHON_SIDECAR_MARKER_PACKAGED
+    : PYTHON_SIDECAR_MARKER_DEV;
+  await reapStaleSidecar(pidfilePath, marker);
+
   const port = await pickFreePort();
   const { command, args, cwd } = resolveBackend(roots, port);
 
@@ -102,12 +122,20 @@ export async function startBackend(roots: BackendRoots): Promise<BackendHandle> 
     console.log(`[py] exited with code ${code}`);
   });
 
-  await waitForHealth(port);
-  return { port, process: child };
+  writeSidecarPid(pidfilePath, child.pid);
+  try {
+    await waitForHealth(port);
+  } catch (err) {
+    if (!child.killed) child.kill('SIGTERM');
+    removeSidecarPidfile(pidfilePath);
+    throw err;
+  }
+  return { port, process: child, pidfilePath };
 }
 
 export function stopBackend(handle: BackendHandle): void {
   if (!handle.process.killed) {
     handle.process.kill('SIGTERM');
   }
+  removeSidecarPidfile(handle.pidfilePath);
 }

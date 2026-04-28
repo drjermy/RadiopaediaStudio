@@ -2,17 +2,31 @@ import { ChildProcess, spawn } from 'child_process';
 import { existsSync } from 'fs';
 import { createServer } from 'net';
 import * as path from 'path';
+import {
+  reapStaleSidecar,
+  removeSidecarPidfile,
+  writeSidecarPid,
+} from './sidecar-pidfile';
 
 export interface NodeBackendHandle {
   port: number;
   process: ChildProcess;
+  pidfilePath: string;
 }
 
 export interface NodeBackendRoots {
   projectRoot: string;
   resourcesPath: string;
+  userDataPath: string;
   isPackaged: boolean;
 }
+
+// `ps -o command=` for the spawned sidecar shows Electron's helper binary
+// followed by the absolute server.mjs path. Matching that path is more
+// distinctive than matching `node`/`Electron Helper`, and is identical for
+// dev and packaged runs from the same checkout.
+const NODE_SIDECAR_MARKER = 'backend-js/server.mjs';
+const PIDFILE_NAME = 'node-sidecar.pid';
 
 async function pickFreePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -65,6 +79,9 @@ function resolveServerDir(roots: NodeBackendRoots): string {
 }
 
 export async function startNodeSidecar(roots: NodeBackendRoots): Promise<NodeBackendHandle> {
+  const pidfilePath = path.join(roots.userDataPath, PIDFILE_NAME);
+  await reapStaleSidecar(pidfilePath, NODE_SIDECAR_MARKER);
+
   const port = await pickFreePort();
   const cwd = resolveServerDir(roots);
 
@@ -87,12 +104,20 @@ export async function startNodeSidecar(roots: NodeBackendRoots): Promise<NodeBac
     console.log(`[node] exited with code ${code}`);
   });
 
-  await waitForHealth(port);
-  return { port, process: child };
+  writeSidecarPid(pidfilePath, child.pid);
+  try {
+    await waitForHealth(port);
+  } catch (err) {
+    if (!child.killed) child.kill('SIGTERM');
+    removeSidecarPidfile(pidfilePath);
+    throw err;
+  }
+  return { port, process: child, pidfilePath };
 }
 
 export function stopNodeSidecar(handle: NodeBackendHandle): void {
   if (!handle.process.killed) {
     handle.process.kill('SIGTERM');
   }
+  removeSidecarPidfile(handle.pidfilePath);
 }
