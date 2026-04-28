@@ -2018,6 +2018,11 @@ function renderInitialSteps(studyCount: number, _totalSeries: number): void {
     });
   }
   list.push({
+    id: 'anon',
+    label: 'Anonymise images (dicomanon)',
+    status: 'pending',
+  });
+  list.push({
     id: 'images',
     label: 'Upload images (S3 + image_preparation)',
     status: 'pending',
@@ -2305,6 +2310,11 @@ async function runImageUploadViaBridge(
   try {
     const result = await window.uploadBridge.startImages({ caseId, studies });
     if (result.status === 'ok') {
+      // anon should already be done from the first non-stage event, but
+      // close it explicitly in case there were no series (shouldn't
+      // happen in practice — guarded by validateCaseForm).
+      const anonStep = steps.find((s) => s.id === 'anon');
+      if (anonStep && anonStep.status !== 'done') setStep('anon', 'done');
       setStep('images', 'done');
       return true;
     }
@@ -2340,6 +2350,16 @@ type _UploadEventPayload =
   | { type: 'all-done'; caseId: number }
   | { type: 'aborted' };
 
+function phaseLabel(phase: 'stage' | 'hash' | 'presign' | 'upload' | 'prepare'): string {
+  switch (phase) {
+    case 'stage':   return 'anonymising';
+    case 'hash':    return 'hashing';
+    case 'presign': return 'presigning';
+    case 'upload':  return 'uploading';
+    case 'prepare': return 'preparing';
+  }
+}
+
 function handleUploadEvent(e: _UploadEventPayload): void {
   switch (e.type) {
     case 'budget':
@@ -2357,25 +2377,41 @@ function handleUploadEvent(e: _UploadEventPayload): void {
       uploadProgressText.textContent = formatProgress(e.doneBytes, e.totalBytes);
       break;
     case 'series-start':
+      // Always belongs to the upload phase — anonymise emits its own
+      // series-progress { phase: 'stage' } before discovery hits this.
       setStep('images', 'running',
         `study ${e.studyIdx + 1}, series ${e.seriesIdx + 1} — ${e.sliceCount} slice${e.sliceCount === 1 ? '' : 's'}`);
       break;
     case 'series-progress': {
-      const phase = e.phase === 'stage' ? 'anonymising'
-        : e.phase === 'hash' ? 'hashing'
-        : e.phase === 'presign' ? 'presigning'
-        : e.phase === 'upload' ? 'uploading'
-        : 'preparing';
-      setStep('images', 'running',
-        `study ${e.studyIdx + 1}, series ${e.seriesIdx + 1} — ${phase} ${e.done}/${e.total}`);
+      const detail =
+        `study ${e.studyIdx + 1}, series ${e.seriesIdx + 1} — ${phaseLabel(e.phase)} ${e.done}/${e.total}`;
+      // Stage events drive the discrete Anonymise row; everything else
+      // drives the Upload row. The anon step is marked done implicitly
+      // when the first non-stage event arrives (see below).
+      if (e.phase === 'stage') {
+        setStep('anon', 'running', detail);
+      } else {
+        // First non-stage event after staging: close out the anon row.
+        const anonStep = steps.find((s) => s.id === 'anon');
+        if (anonStep && anonStep.status === 'running') {
+          setStep('anon', 'done');
+        }
+        setStep('images', 'running', detail);
+      }
       break;
     }
     case 'series-done':
       // Don't paint the parent step done yet — more series may follow.
       break;
     case 'series-error':
-      setStep('images', 'error',
-        `study ${e.studyIdx + 1}, series ${e.seriesIdx + 1}: ${e.message}`);
+      // Route the error to whichever step we were in when it fired.
+      // series-error comes after any in-flight series-progress, so the
+      // most-recently-running step is the right target.
+      {
+        const target = steps.find((s) => s.status === 'running')?.id ?? 'images';
+        setStep(target, 'error',
+          `study ${e.studyIdx + 1}, series ${e.seriesIdx + 1}: ${e.message}`);
+      }
       break;
     case 'finalize-start':
       setStep('finalize', 'running');
@@ -2738,6 +2774,15 @@ function finishWithSuccess(
   sub.style.marginTop = '6px';
   sub.style.opacity = '0.75';
   sub.textContent = `${studyIds.length} stud${studyIds.length === 1 ? 'y' : 'ies'} created with images, finalised on Radiopaedia.`;
+  // Safety-story callout — every byte we sent went through dicomanon
+  // first. Worth surfacing explicitly in the success state so the user
+  // (and anyone they share the case with) has the privacy answer right
+  // there next to the case URL.
+  const anon = document.createElement('div');
+  anon.style.marginTop = '4px';
+  anon.style.opacity = '0.75';
+  anon.style.fontSize = '12px';
+  anon.textContent = '✓ All series anonymised by dicomanon before upload.';
   // Heads-up: Radiopaedia runs a DICOM-conversion + thumbnail job after
   // mark_upload_finished. The case page exists immediately but the
   // studies / series tiles won't show up until that job completes —
@@ -2767,6 +2812,7 @@ function finishWithSuccess(
 
   uploadPreviewResult.appendChild(heading);
   uploadPreviewResult.appendChild(sub);
+  uploadPreviewResult.appendChild(anon);
   uploadPreviewResult.appendChild(heads);
   uploadPreviewResult.appendChild(link);
   write(`case created on Radiopaedia: ${caseUrl} (${studyIds.length} studies)`);
