@@ -1,6 +1,12 @@
 import { app, safeStorage } from 'electron';
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs';
 import * as path from 'path';
+import {
+  isRadiopaediaTokens,
+  isRadiopaediaClientOverride,
+  type RadiopaediaTokens as CoreRadiopaediaTokens,
+  type RadiopaediaClientOverride as CoreRadiopaediaClientOverride,
+} from './credentials-core';
 
 // Encrypted-at-rest credentials. Backed by Electron's safeStorage, which uses
 // the macOS Keychain on darwin and OS-level secret storage on other platforms.
@@ -19,17 +25,8 @@ import * as path from 'path';
 // No migration is performed from the previous single-string schema — the
 // app hadn't shipped, nothing to migrate.
 
-export interface RadiopaediaTokens {
-  access_token: string;
-  refresh_token: string;
-  expires_at: number; // epoch seconds; computed as now + expires_in at save time
-  token_type: 'Bearer';
-}
-
-export interface RadiopaediaClientOverride {
-  client_id: string;
-  client_secret: string;
-}
+export type RadiopaediaTokens = CoreRadiopaediaTokens;
+export type RadiopaediaClientOverride = CoreRadiopaediaClientOverride;
 
 const TOKENS_FILE = 'radiopaedia-tokens.enc';
 const OVERRIDE_FILE = 'radiopaedia-client-override.enc';
@@ -90,23 +87,6 @@ function removeFile(file: string): void {
       /* swallow */
     }
   }
-}
-
-function isRadiopaediaTokens(v: unknown): v is RadiopaediaTokens {
-  if (!v || typeof v !== 'object') return false;
-  const o = v as Record<string, unknown>;
-  return (
-    typeof o.access_token === 'string' &&
-    typeof o.refresh_token === 'string' &&
-    typeof o.expires_at === 'number' &&
-    o.token_type === 'Bearer'
-  );
-}
-
-function isRadiopaediaClientOverride(v: unknown): v is RadiopaediaClientOverride {
-  if (!v || typeof v !== 'object') return false;
-  const o = v as Record<string, unknown>;
-  return typeof o.client_id === 'string' && typeof o.client_secret === 'string';
 }
 
 // --- Tokens ---
