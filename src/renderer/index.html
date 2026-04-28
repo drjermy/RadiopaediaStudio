@@ -726,10 +726,11 @@
       right: 0;
       max-height: 220px;
       overflow-y: auto;
-      background: var(--bg, #fff);
+      background: Canvas;
+      color: CanvasText;
       border: 1px solid rgba(127, 127, 127, 0.4);
       border-radius: 4px;
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
       z-index: 20;
     }
     .typeahead-item {
@@ -737,10 +738,10 @@
       font-size: 12px;
       font-weight: 400;
       cursor: pointer;
-      color: inherit;
+      color: CanvasText;
     }
     .typeahead-item:hover {
-      background: rgba(10, 132, 255, 0.12);
+      background: rgba(10, 132, 255, 0.18);
     }
     /* Upload preview modal */
     .modal-overlay {
@@ -753,8 +754,8 @@
       z-index: 100;
     }
     .modal {
-      background: var(--bg, #fff);
-      color: inherit;
+      background: Canvas;
+      color: CanvasText;
       width: min(720px, 92vw);
       max-height: 86vh;
       display: flex;
@@ -779,7 +780,7 @@
     .modal-body h3 {
       font-size: 13px;
       margin: 16px 0 6px;
-      color: #555;
+      opacity: 0.75;
     }
     .modal-warning {
       padding: 10px 12px;
@@ -791,7 +792,6 @@
     }
     .preview-summary {
       font-size: 13px;
-      color: #444;
       line-height: 1.6;
     }
     .preview-summary .preview-row {
@@ -799,7 +799,7 @@
       gap: 8px;
     }
     .preview-summary .preview-key {
-      color: #888;
+      opacity: 0.6;
       width: 110px;
       flex: 0 0 auto;
     }
@@ -808,7 +808,6 @@
       padding-left: 22px;
       font-size: 12px;
       font-family: ui-monospace, "SF Mono", Menlo, monospace;
-      color: #444;
     }
     .preview-endpoints li { margin: 2px 0; }
     .preview-payloads details {
@@ -818,18 +817,19 @@
       cursor: pointer;
       font-size: 12px;
       font-weight: 600;
-      color: #555;
+      opacity: 0.75;
       padding: 4px 0;
     }
     .preview-payloads pre {
-      background: rgba(127, 127, 127, 0.08);
-      border: 1px solid rgba(127, 127, 127, 0.2);
+      background: rgba(127, 127, 127, 0.15);
+      border: 1px solid rgba(127, 127, 127, 0.25);
       border-radius: 6px;
       padding: 8px 10px;
       font-size: 11px;
       font-family: ui-monospace, "SF Mono", Menlo, monospace;
       overflow-x: auto;
       margin: 4px 0 8px;
+      color: CanvasText;
     }
     .modal-footer {
       display: flex;
