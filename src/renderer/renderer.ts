@@ -2237,15 +2237,33 @@ function showAuthPromptAndRetry(p: PreparedUpload): void {
   openBtn.className = 'primary';
   openBtn.textContent = 'Sign in to Radiopaedia →';
   openBtn.style.alignSelf = 'flex-start';
+  // A line under the Sign-in button where we surface auth failures
+  // (e.g. missing OAuth client credentials) inline — the in-app log
+  // strip is too easy to miss.
+  const openErr = document.createElement('div');
+  openErr.style.fontSize = '12px';
+  openErr.style.color = '#d14';
+  openErr.style.lineHeight = '1.4';
+  openErr.hidden = true;
+
   openBtn.addEventListener('click', async () => {
     openBtn.disabled = true;
     openBtn.textContent = 'Opening browser…';
+    openErr.hidden = true;
+    openErr.textContent = '';
     try {
       const result = await window.radiopaedia.openAuthorizationPage();
       if (result === 'error') {
-        write('failed to open the authorization page (check OAuth client config in Settings)');
+        write('failed to open the authorization page — check OAuth client config');
         openBtn.disabled = false;
         openBtn.textContent = 'Sign in to Radiopaedia →';
+        openErr.hidden = false;
+        openErr.innerHTML =
+          'Failed to open the authorization page. The most common cause is ' +
+          'missing OAuth client credentials. Set <code>RADIOPAEDIA_CLIENT_ID</code> ' +
+          'and <code>RADIOPAEDIA_CLIENT_SECRET</code> in <code>src/main/radiopaedia-config.ts</code> ' +
+          '(it\'s gitignored), then re-run <code>npm run build:frontend</code> ' +
+          'and restart the app.';
         return;
       }
       openBtn.textContent = 'Browser opened — paste the code below';
@@ -2254,9 +2272,12 @@ function showAuthPromptAndRetry(p: PreparedUpload): void {
       write(`auth: ${(e as Error).message ?? e}`);
       openBtn.disabled = false;
       openBtn.textContent = 'Sign in to Radiopaedia →';
+      openErr.hidden = false;
+      openErr.textContent = `Auth error: ${(e as Error).message ?? e}`;
     }
   });
   authBlock.appendChild(openBtn);
+  authBlock.appendChild(openErr);
 
   const codeRow = document.createElement('div');
   codeRow.style.display = 'flex';
