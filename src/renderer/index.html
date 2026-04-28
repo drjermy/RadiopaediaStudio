@@ -960,6 +960,47 @@
       color: #d14;
       font-size: 12px;
     }
+    .auth-profile {
+      padding: 10px 12px;
+      background: rgba(127, 127, 127, 0.08);
+      border: 1px solid rgba(127, 127, 127, 0.25);
+      border-radius: 6px;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    .auth-profile .auth-profile-login {
+      font-weight: 600;
+      font-size: 14px;
+    }
+    .auth-profile .auth-profile-rows {
+      margin-top: 6px;
+      display: grid;
+      grid-template-columns: max-content auto;
+      gap: 2px 12px;
+      font-size: 12px;
+    }
+    .auth-profile .auth-profile-rows .auth-profile-key {
+      opacity: 0.7;
+    }
+    .auth-profile .auth-profile-bar {
+      width: 80px;
+      height: 4px;
+      border-radius: 2px;
+      background: rgba(127, 127, 127, 0.25);
+      display: inline-block;
+      vertical-align: middle;
+      margin-right: 6px;
+      position: relative;
+      overflow: hidden;
+    }
+    .auth-profile .auth-profile-bar > span {
+      position: absolute;
+      inset: 0 auto 0 0;
+      background: var(--accent);
+    }
+    .auth-profile .auth-profile-bar.full > span {
+      background: #d14;
+    }
     .upload-series-row {
       display: flex;
       gap: 10px;
@@ -1271,8 +1312,8 @@
           <div class="auth-error" id="auth-exchange-error" hidden></div>
         </div>
         <div id="auth-signed-in" hidden>
-          <p class="modal-info" style="margin-bottom: 10px;">
-            <strong>Signed in to Radiopaedia.</strong>
+          <div id="auth-profile" class="auth-profile">Loading account info…</div>
+          <p style="margin: 10px 0; opacity: 0.7; font-size: 12px;">
             Tokens are stored in your system keychain via Electron safeStorage.
           </p>
           <button id="btn-auth-signout" type="button">Sign out</button>

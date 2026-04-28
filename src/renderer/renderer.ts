@@ -97,8 +97,10 @@ const uploadSeriesListEl = req<HTMLDivElement>('upload-series-list');
 // Auth modal + header button.
 const btnAuth = req<HTMLButtonElement>('btn-auth');
 const authModal = req<HTMLDivElement>('auth-modal');
+const authModalTitle = req<HTMLHeadingElement>('auth-modal-title');
 const authSignedOut = req<HTMLDivElement>('auth-signed-out');
 const authSignedIn = req<HTMLDivElement>('auth-signed-in');
+const authProfile = req<HTMLDivElement>('auth-profile');
 const btnAuthOpen = req<HTMLButtonElement>('btn-auth-open');
 const authOpenError = req<HTMLDivElement>('auth-open-error');
 const authCodeInput = req<HTMLInputElement>('auth-code-input');
@@ -2379,6 +2381,7 @@ async function refreshAuthState(): Promise<void> {
 function paintAuthModal(): void {
   authSignedOut.hidden = isAuthed;
   authSignedIn.hidden = !isAuthed;
+  authModalTitle.textContent = isAuthed ? 'Radiopaedia account' : 'Radiopaedia sign-in';
   authOpenError.hidden = true;
   authOpenError.textContent = '';
   authExchangeError.hidden = true;
@@ -2389,17 +2392,126 @@ function paintAuthModal(): void {
   btnAuthSubmit.textContent = 'Submit code';
   authCodeInput.disabled = false;
   authCodeInput.value = '';
+  if (isAuthed) {
+    authProfile.textContent = 'Loading account info…';
+  }
 }
 
 function openAuthModal(): void {
   paintAuthModal();
   authModal.hidden = false;
   syncBodyScrollLock();
-  if (!isAuthed) authCodeInput.focus();
+  if (isAuthed) void refreshAuthProfile();
+  else authCodeInput.focus();
 }
 function closeAuthModal(): void {
   authModal.hidden = true;
   syncBodyScrollLock();
+}
+
+// Fetch /users/current and render login + quotas in the profile block.
+// Reuses the renderer's existing apiBase + token bridges so we don't
+// duplicate auth plumbing. Errors render inline so a stale token shows
+// up here rather than silently failing on the next upload.
+async function refreshAuthProfile(): Promise<void> {
+  let token: string | null;
+  let apiBase: string;
+  try {
+    [token, apiBase] = await Promise.all([
+      window.radiopaedia.getValidAccessToken(),
+      window.radiopaedia.getApiBase(),
+    ]);
+  } catch (e) {
+    renderAuthProfileError(`Couldn't reach the auth bridge: ${(e as Error).message ?? e}`);
+    return;
+  }
+  if (!token) {
+    renderAuthProfileError('No valid access token. Sign in again.');
+    setAuthed(false);
+    paintAuthModal();
+    return;
+  }
+  try {
+    const me = await radiopaediaApiGet(apiBase, '/api/v1/users/current', token);
+    renderAuthProfile(apiBase, me);
+  } catch (e) {
+    const err = e as ApiError;
+    const detail = err?.status ? ` (HTTP ${err.status})` : '';
+    renderAuthProfileError(`Couldn't load account info${detail}.`);
+  }
+}
+
+function renderAuthProfileError(message: string): void {
+  authProfile.innerHTML = '';
+  const span = document.createElement('span');
+  span.style.color = '#d14';
+  span.style.fontSize = '12px';
+  span.textContent = message;
+  authProfile.appendChild(span);
+}
+
+function renderAuthProfile(apiBase: string, me: Record<string, unknown>): void {
+  const login = (me.login as string | undefined)?.trim() || '(unknown)';
+  const quotas = (me.quotas ?? {}) as Record<string, unknown>;
+  const draftAllowed = quotas.allowed_draft_cases as number | null | undefined;
+  const draftUsed = (quotas.draft_case_count as number | undefined) ?? 0;
+  const unlistedAllowed = quotas.allowed_unlisted_cases as number | null | undefined;
+  const unlistedUsed = (quotas.unlisted_case_count as number | undefined) ?? 0;
+
+  authProfile.innerHTML = '';
+
+  const heading = document.createElement('div');
+  heading.className = 'auth-profile-login';
+  heading.textContent = `Signed in as @${login}`;
+  authProfile.appendChild(heading);
+
+  const draftsUrl = `${apiBase}/users/${encodeURIComponent(login)}/cases?visibility=draft`;
+  const draftsLink = document.createElement('div');
+  draftsLink.style.marginTop = '4px';
+  draftsLink.style.fontSize = '12px';
+  const a = document.createElement('a');
+  a.href = draftsUrl;
+  a.textContent = 'Open my draft cases →';
+  a.style.color = 'var(--accent)';
+  a.addEventListener('click', (ev) => {
+    ev.preventDefault();
+    void window.shellBridge.openExternal(draftsUrl);
+  });
+  draftsLink.appendChild(a);
+  authProfile.appendChild(draftsLink);
+
+  const grid = document.createElement('div');
+  grid.className = 'auth-profile-rows';
+  appendQuotaRow(grid, 'Draft cases', draftUsed, draftAllowed);
+  appendQuotaRow(grid, 'Unlisted cases', unlistedUsed, unlistedAllowed);
+  authProfile.appendChild(grid);
+}
+
+function appendQuotaRow(
+  grid: HTMLDivElement,
+  label: string,
+  used: number,
+  allowed: number | null | undefined,
+): void {
+  const key = document.createElement('span');
+  key.className = 'auth-profile-key';
+  key.textContent = label;
+  grid.appendChild(key);
+
+  const val = document.createElement('span');
+  if (allowed == null) {
+    val.textContent = `${used} (no limit)`;
+  } else {
+    const ratio = allowed > 0 ? Math.min(used / allowed, 1) : 0;
+    const bar = document.createElement('span');
+    bar.className = 'auth-profile-bar' + (used >= allowed ? ' full' : '');
+    const fill = document.createElement('span');
+    fill.style.width = `${Math.round(ratio * 100)}%`;
+    bar.appendChild(fill);
+    val.appendChild(bar);
+    val.appendChild(document.createTextNode(`${used} / ${allowed}`));
+  }
+  grid.appendChild(val);
 }
 
 btnAuth.addEventListener('click', openAuthModal);
@@ -2455,6 +2567,7 @@ btnAuthSubmit.addEventListener('click', async () => {
     if (result === 'ok') {
       setAuthed(true);
       paintAuthModal();
+      void refreshAuthProfile();
       write('signed in to Radiopaedia');
     } else {
       btnAuthSubmit.disabled = false;
