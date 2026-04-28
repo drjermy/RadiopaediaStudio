@@ -132,18 +132,40 @@
       text-align: right;
     }
 
-    /* Log */
-    #log {
+    /* Log modal contents. The log used to live in a permanent strip at
+       the bottom of the window; it's behind the header Log button now,
+       so the body just needs to be readable + scrollable inside the
+       modal. */
+    .log-body {
       font-family: ui-monospace, "SF Mono", Menlo, monospace;
       font-size: 12px;
-      background: rgba(127, 127, 127, 0.1);
-      padding: 12px;
-      border-radius: 8px;
-      max-height: 140px;
-      overflow: auto;
       white-space: pre-wrap;
+      min-height: 80px;
+      max-height: 60vh;
+      overflow-y: auto;
+      padding: 4px 0;
     }
-    #log:empty { display: none; }
+    .log-body:empty::before {
+      content: '(no log entries yet)';
+      opacity: 0.5;
+      font-style: italic;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    /* Small numeric badge tucked next to a header-button label
+       (currently only "Log" — used for unread-message count). */
+    .header-badge {
+      display: inline-block;
+      margin-left: 6px;
+      padding: 1px 6px;
+      background: var(--accent);
+      color: white;
+      border-radius: 9px;
+      font-size: 10px;
+      font-weight: 600;
+      line-height: 1.4;
+      min-width: 12px;
+      text-align: center;
+    }
 
     /* Study summary */
     .study-summary {
@@ -1156,6 +1178,7 @@
     <div class="header-actions">
       <button id="btn-open-folder">Open Folder</button>
       <button id="btn-reset" hidden>Clear</button>
+      <button id="btn-log" type="button">Log<span id="btn-log-badge" class="header-badge" hidden></span></button>
       <button id="btn-auth" type="button">Sign in to Radiopaedia</button>
     </div>
   </div>
@@ -1286,7 +1309,21 @@
     </div>
   </div>
 
-  <div id="log"></div>
+  <div id="log-modal" class="modal-overlay" hidden>
+    <div class="modal" role="dialog" aria-labelledby="log-modal-title">
+      <div class="modal-header">
+        <h2 id="log-modal-title">Activity log</h2>
+        <button id="btn-log-close" class="icon-btn" aria-label="Close" type="button">×</button>
+      </div>
+      <div class="modal-body">
+        <div id="log-body" class="log-body"></div>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-log-clear" type="button">Clear</button>
+        <button id="btn-log-done" class="primary" type="button">Done</button>
+      </div>
+    </div>
+  </div>
 
   <div id="auth-modal" class="modal-overlay" hidden>
     <div class="modal" role="dialog" aria-labelledby="auth-modal-title">

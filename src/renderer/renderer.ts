@@ -69,7 +69,13 @@ const trimEnd = req<HTMLInputElement>('trim-end');
 const trimFill = req<HTMLDivElement>('trim-fill');
 const trimLabel = req<HTMLDivElement>('trim-label');
 const btnTrim = opt<HTMLButtonElement>('btn-trim');
-const log = req<HTMLDivElement>('log');
+const log = req<HTMLDivElement>('log-body');
+const logModal = req<HTMLDivElement>('log-modal');
+const btnLog = req<HTMLButtonElement>('btn-log');
+const btnLogBadge = req<HTMLSpanElement>('btn-log-badge');
+const btnLogClose = req<HTMLButtonElement>('btn-log-close');
+const btnLogDone = req<HTMLButtonElement>('btn-log-done');
+const btnLogClear = req<HTMLButtonElement>('btn-log-clear');
 
 const inspectedTitle = req<HTMLHeadingElement>('inspected-title');
 const inspectedSummary = req<HTMLParagraphElement>('inspected-summary');
@@ -171,10 +177,20 @@ let trimCount = 0;
 let currentAbortController: AbortController | null = null;
 
 // Helpers -------------------------------------------------------------------
+// Unread-since-last-modal-open count, surfaced as a small badge on the
+// header Log button so the user knows when something interesting has
+// happened without taking screen real estate for a permanent log strip.
+let logUnread = 0;
+
 function write(msg: string): void {
   const stamp = new Date().toLocaleTimeString();
   log.textContent += `[${stamp}] ${msg}\n`;
   log.scrollTop = log.scrollHeight;
+  if (logModal.hidden) {
+    logUnread += 1;
+    btnLogBadge.textContent = String(logUnread);
+    btnLogBadge.hidden = false;
+  }
 }
 
 function humanBytes(n: number): string {
@@ -2046,9 +2062,37 @@ function hideUploadPreview(): void {
 // in the viewport — a constant minor irritation. We track which overlays
 // are open via a small ref and lock the body whenever any are visible.
 function syncBodyScrollLock(): void {
-  const anyOpen = !uploadPreview.hidden || !authModal.hidden;
+  const anyOpen = !uploadPreview.hidden || !authModal.hidden || !logModal.hidden;
   document.body.style.overflow = anyOpen ? 'hidden' : '';
 }
+
+// Log-modal handlers --------------------------------------------------------
+function openLogModal(): void {
+  logUnread = 0;
+  btnLogBadge.hidden = true;
+  btnLogBadge.textContent = '';
+  logModal.hidden = false;
+  syncBodyScrollLock();
+  // Pin scroll to the bottom — the user almost always wants the most
+  // recent entries first when the modal opens.
+  log.scrollTop = log.scrollHeight;
+}
+function closeLogModal(): void {
+  logModal.hidden = true;
+  syncBodyScrollLock();
+}
+btnLog.addEventListener('click', openLogModal);
+btnLogClose.addEventListener('click', closeLogModal);
+btnLogDone.addEventListener('click', closeLogModal);
+btnLogClear.addEventListener('click', () => {
+  log.textContent = '';
+});
+logModal.addEventListener('click', (e) => {
+  if (e.target === logModal) closeLogModal();
+});
+document.addEventListener('keydown', (e) => {
+  if (!logModal.hidden && e.key === 'Escape') closeLogModal();
+});
 
 // "12.4 MB / 248.7 MB · 5%" — the progress bar's status line. Each byte
 // counts twice in the budget (hash + upload), so we display the *upload-
