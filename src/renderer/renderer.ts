@@ -1359,12 +1359,16 @@ async function loadFolder(folderPath: string): Promise<void> {
     anonOutput = folderPath;
     renderStudySummary();
     const nSeries = summary.studies?.reduce((a, s) => a + (s.series?.length ?? 0), 0) ?? 0;
+    const nStudies = summary.studies?.length ?? 0;
     doneTitle.textContent = `Loaded ${nSeries} series from ${basename(folderPath)}`;
     // No drop-details for load — nothing was dropped/scrubbed.
     dropDetails.hidden = true;
     hydrateCaseForm(studyMeta, anonOutput);
     setState('done');
     persistLastFolder(folderPath);
+    write(
+      `loaded folder: ${folderPath} (${nStudies} stud${nStudies === 1 ? 'y' : 'ies'}, ${nSeries} series)`,
+    );
   } catch (e) {
     write(`load failed: ${(e as Error).message || e}`);
     setState('idle');
