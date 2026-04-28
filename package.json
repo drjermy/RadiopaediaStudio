@@ -1,5 +1,6 @@
 {
   "name": "radiopaedia-studio",
+  "productName": "Radiopaedia Studio",
   "version": "0.1.0",
   "description": "Radiopaedia Studio — desktop app for preparing and uploading DICOM cases to Radiopaedia",
   "main": "dist/main/index.js",

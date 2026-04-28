@@ -21,6 +21,14 @@ import {
   type AuthExchangeResult,
 } from './radiopaedia-oauth-oob';
 
+// Override the app name BEFORE whenReady — Electron's default macOS menu
+// uses app.getName() to label the first (app) menu, and Cmd-Tab uses the
+// same value in dev mode. Without this, dev runs show "Electron" because
+// the running binary is Electron.app and our package.json `name` is the
+// kebab-case `radiopaedia-studio`. Packaged builds rely on `productName`
+// in package.json, which electron-builder writes into CFBundleName.
+app.setName('Radiopaedia Studio');
+
 let backend: BackendHandle | null = null;
 let nodeBackend: NodeBackendHandle | null = null;
 let mainWindow: BrowserWindow | null = null;
