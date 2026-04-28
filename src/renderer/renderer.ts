@@ -917,7 +917,9 @@ function renderUploadSeriesList(): void {
     group.className = 'upload-study-group';
     group.dataset.studyKey = studyKeyFor(st) ?? '';
 
-    // Header row: human study label + Modality picker.
+    // Header row: human study label + Modality picker. The header stays put
+    // across modality changes so the user keeps keyboard focus on the select;
+    // only the series rows beneath it re-render.
     const header = document.createElement('div');
     header.className = 'upload-study-header';
 
@@ -948,27 +950,38 @@ function renderUploadSeriesList(): void {
       modSelect.appendChild(opt);
     }
     modSelect.value = getStudyModality(st);
-    modSelect.addEventListener('change', () => {
-      setStudyModality(st, modSelect.value as Modality | '');
-      // Re-render this group so per-series perspective/specifics inputs pick
-      // up the new modality's labels and suggestion lists.
-      renderUploadSeriesList();
-      refreshCaseFormUI();
-      persistCaseDraft();
-    });
     modLabel.appendChild(modSelect);
     header.appendChild(modLabel);
     group.appendChild(header);
 
-    // Series rows.
+    // Series rows live in their own container so we can rebuild just this
+    // chunk on modality change, leaving the header (and any other groups)
+    // untouched.
     const rows = document.createElement('div');
     rows.className = 'upload-series-rows';
-    const config = perspectiveConfigFor(getStudyModality(st));
-    for (const se of seriesWithFolder) {
-      rows.appendChild(buildUploadSeriesRow(se, config));
-    }
+    fillSeriesRows(rows, seriesWithFolder, getStudyModality(st));
     group.appendChild(rows);
+
+    modSelect.addEventListener('change', () => {
+      setStudyModality(st, modSelect.value as Modality | '');
+      fillSeriesRows(rows, seriesWithFolder, getStudyModality(st));
+      refreshCaseFormUI();
+      persistCaseDraft();
+    });
+
     uploadSeriesListEl.appendChild(group);
+  }
+}
+
+function fillSeriesRows(
+  container: HTMLDivElement,
+  seriesList: SeriesSummary[],
+  modality: Modality | '',
+): void {
+  container.innerHTML = '';
+  const config = perspectiveConfigFor(modality);
+  for (const se of seriesList) {
+    container.appendChild(buildUploadSeriesRow(se, config));
   }
 }
 
