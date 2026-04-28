@@ -6,6 +6,7 @@ directories:
 files:
   - dist/**/*
   - src/renderer/**/*
+  - src/shared/**/*.js
   - package.json
 extraResources:
   - from: backend/dist/radiopaedia-studio-backend
