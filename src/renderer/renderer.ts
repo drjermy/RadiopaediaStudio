@@ -2116,10 +2116,7 @@ async function uploadCaseAndStudies(p: PreparedUpload): Promise<void> {
     return finishWithError('preflight', `Couldn't reach the auth bridge — ${(e as Error).message}`);
   }
   if (!token) {
-    return finishWithError(
-      'auth',
-      'No valid access token. Authenticate via Settings → Radiopaedia and try again.',
-    );
+    return showAuthPromptAndRetry(p);
   }
 
   // 1. Auth + quota check.
@@ -2194,6 +2191,143 @@ function apiCallFailed(stepId: string, err: unknown): void {
   const body = e?.body ? ` — ${e.body.slice(0, 200)}` : '';
   setStep(stepId, 'error', `${e?.message ?? 'unknown error'}${status}`);
   finishWithError(stepId, `${e?.message ?? 'request failed'}${status}${body}`);
+}
+
+// Inline OAuth flow inside the upload modal. When the upload pre-flight
+// finds no valid access token, we render the OOB authorisation flow here
+// rather than redirecting to a Settings panel that doesn't exist yet:
+//
+//   1. "Sign in to Radiopaedia" → opens the system browser at /oauth/authorize.
+//   2. The user authorises on the site, sees an authorization code.
+//   3. They paste the code into our input + click Submit code.
+//   4. We exchange via the radiopaedia bridge; on success we auto-retry
+//      the upload that triggered this.
+//
+// This is the minimum-viable auth UX. A proper Settings panel (with sign
+// out, current user display, client-credential override) is a follow-up.
+function showAuthPromptAndRetry(p: PreparedUpload): void {
+  uploadInFlight = false;
+  btnPreviewSubmit.disabled = true;
+  btnPreviewSubmit.textContent = 'Send to Radiopaedia';
+  btnPreviewCancel.disabled = false;
+  btnPreviewCancel.textContent = 'Close';
+
+  uploadPreviewResult.hidden = false;
+  uploadPreviewResult.innerHTML = '';
+
+  const banner = document.createElement('div');
+  banner.className = 'modal-error';
+  banner.innerHTML = `
+    <div><strong>Sign in to Radiopaedia required.</strong></div>
+    <div style="margin-top: 6px; opacity: 0.85;">
+      No valid access token is stored. Authorise this app to upload on your
+      behalf, then paste the code Radiopaedia shows you.
+    </div>
+  `;
+  uploadPreviewResult.appendChild(banner);
+
+  const authBlock = document.createElement('div');
+  authBlock.style.marginTop = '10px';
+  authBlock.style.display = 'flex';
+  authBlock.style.flexDirection = 'column';
+  authBlock.style.gap = '8px';
+
+  const openBtn = document.createElement('button');
+  openBtn.type = 'button';
+  openBtn.className = 'primary';
+  openBtn.textContent = 'Sign in to Radiopaedia →';
+  openBtn.style.alignSelf = 'flex-start';
+  openBtn.addEventListener('click', async () => {
+    openBtn.disabled = true;
+    openBtn.textContent = 'Opening browser…';
+    try {
+      const result = await window.radiopaedia.openAuthorizationPage();
+      if (result === 'error') {
+        write('failed to open the authorization page (check OAuth client config in Settings)');
+        openBtn.disabled = false;
+        openBtn.textContent = 'Sign in to Radiopaedia →';
+        return;
+      }
+      openBtn.textContent = 'Browser opened — paste the code below';
+      codeInput.focus();
+    } catch (e) {
+      write(`auth: ${(e as Error).message ?? e}`);
+      openBtn.disabled = false;
+      openBtn.textContent = 'Sign in to Radiopaedia →';
+    }
+  });
+  authBlock.appendChild(openBtn);
+
+  const codeRow = document.createElement('div');
+  codeRow.style.display = 'flex';
+  codeRow.style.gap = '8px';
+  codeRow.style.alignItems = 'center';
+
+  const codeLabel = document.createElement('span');
+  codeLabel.textContent = 'Authorization code:';
+  codeLabel.style.fontSize = '13px';
+  codeLabel.style.opacity = '0.75';
+  codeRow.appendChild(codeLabel);
+
+  const codeInput = document.createElement('input');
+  codeInput.type = 'text';
+  codeInput.placeholder = 'paste here';
+  codeInput.autocomplete = 'off';
+  codeInput.spellcheck = false;
+  codeInput.style.flex = '1 1 auto';
+  codeInput.style.font = 'inherit';
+  codeInput.style.fontSize = '13px';
+  codeInput.style.padding = '4px 8px';
+  codeInput.style.borderRadius = '4px';
+  codeInput.style.border = '1px solid rgba(127,127,127,0.4)';
+  codeInput.style.background = 'transparent';
+  codeInput.style.color = 'inherit';
+  codeRow.appendChild(codeInput);
+
+  const submitBtn = document.createElement('button');
+  submitBtn.type = 'button';
+  submitBtn.textContent = 'Submit code';
+  submitBtn.addEventListener('click', async () => {
+    const code = codeInput.value.trim();
+    if (!code) {
+      codeInput.focus();
+      return;
+    }
+    submitBtn.disabled = true;
+    codeInput.disabled = true;
+    submitBtn.textContent = 'Exchanging…';
+    try {
+      const result = await window.radiopaedia.exchangeAuthorizationCode(code);
+      if (result === 'ok') {
+        write('signed in to Radiopaedia — retrying upload…');
+        // Resume the upload pipeline now that we have a token.
+        void uploadCaseAndStudies(p);
+      } else {
+        submitBtn.disabled = false;
+        codeInput.disabled = false;
+        submitBtn.textContent = 'Submit code';
+        write('exchange failed — code may be expired or already used. Try signing in again.');
+        const errLine = document.createElement('div');
+        errLine.style.color = '#d14';
+        errLine.style.fontSize = '12px';
+        errLine.style.marginTop = '4px';
+        errLine.textContent = 'Exchange failed — try signing in and pasting a fresh code.';
+        authBlock.appendChild(errLine);
+      }
+    } catch (e) {
+      submitBtn.disabled = false;
+      codeInput.disabled = false;
+      submitBtn.textContent = 'Submit code';
+      write(`exchange error: ${(e as Error).message ?? e}`);
+    }
+  });
+  codeInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') submitBtn.click();
+  });
+  codeRow.appendChild(submitBtn);
+
+  authBlock.appendChild(codeRow);
+  uploadPreviewResult.appendChild(authBlock);
 }
 
 function finishWithError(_stepId: string, message: string): void {
