@@ -833,6 +833,22 @@
     .upload-steps li.step-done .step-icon::after { content: '✓'; color: #2c8c3a; }
     .upload-steps li.step-error .step-icon::after { content: '✗'; color: #d14; }
     @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+    .upload-progress {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      margin: 12px 0 4px;
+    }
+    .upload-progress progress {
+      width: 100%;
+      height: 8px;
+    }
+    .upload-progress-text {
+      font-size: 11px;
+      opacity: 0.75;
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      min-height: 1.4em;
+    }
     .upload-result {
       padding: 12px;
       border-radius: 6px;
@@ -1264,8 +1280,10 @@
         <div id="upload-preview-summary" class="preview-summary"></div>
         <h3>Steps</h3>
         <ol id="upload-preview-steps" class="upload-steps"></ol>
-        <h3>Request bodies</h3>
-        <div id="upload-preview-payloads" class="preview-payloads"></div>
+        <div id="upload-preview-progress" class="upload-progress" hidden>
+          <progress id="upload-progress-bar" value="0" max="1"></progress>
+          <div class="upload-progress-text" id="upload-progress-text"></div>
+        </div>
         <div id="upload-preview-result" class="upload-result" hidden></div>
       </div>
       <div class="modal-footer">

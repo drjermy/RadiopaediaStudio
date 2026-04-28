@@ -66,6 +66,8 @@ type UploadStartResult = { status: 'ok' | 'error' | 'aborted'; message?: string 
 
 type UploadPhase = 'hash' | 'presign' | 'upload' | 'prepare';
 type UploadEventPayload =
+  | { type: 'budget'; totalBytes: number; totalFiles: number }
+  | { type: 'bytes-progress'; doneBytes: number; totalBytes: number }
   | { type: 'series-start'; studyIdx: number; seriesIdx: number; folder: string; sliceCount: number }
   | { type: 'series-progress'; studyIdx: number; seriesIdx: number; phase: UploadPhase; done: number; total: number }
   | { type: 'series-done'; studyIdx: number; seriesIdx: number }

@@ -113,7 +113,9 @@ const uploadPreview = req<HTMLDivElement>('upload-preview');
 const uploadPreviewBlurb = req<HTMLParagraphElement>('upload-preview-blurb');
 const uploadPreviewSummary = req<HTMLDivElement>('upload-preview-summary');
 const uploadPreviewSteps = req<HTMLOListElement>('upload-preview-steps');
-const uploadPreviewPayloads = req<HTMLDivElement>('upload-preview-payloads');
+const uploadPreviewProgress = req<HTMLDivElement>('upload-preview-progress');
+const uploadProgressBar = req<HTMLProgressElement>('upload-progress-bar');
+const uploadProgressText = req<HTMLDivElement>('upload-progress-text');
 const uploadPreviewResult = req<HTMLDivElement>('upload-preview-result');
 const btnPreviewClose = req<HTMLButtonElement>('btn-preview-close');
 const btnPreviewCancel = req<HTMLButtonElement>('btn-preview-cancel');
@@ -1960,26 +1962,12 @@ function showUploadPreview(p: PreparedUpload): void {
   // Step list (state added by the submit handler) --------------------------
   renderInitialSteps(p.studyBundles.length, p.totalSeries);
 
-  // Payload bodies (collapsed by default) ----------------------------------
-  uploadPreviewPayloads.innerHTML = '';
-  appendPayload(uploadPreviewPayloads, 'POST /api/v1/cases', p.casePayload, true);
-  for (let i = 0; i < p.studyBundles.length; i++) {
-    const { study, series } = p.studyBundles[i];
-    appendPayload(
-      uploadPreviewPayloads,
-      `POST /api/v1/cases/:case_id/studies — study ${i + 1}`,
-      study,
-      false,
-    );
-    series.forEach((s, j) => {
-      appendPayload(
-        uploadPreviewPayloads,
-        `POST /image_preparation/.../series — study ${i + 1}, series ${j + 1} (not sent yet — image upload is the next slice)`,
-        buildImagePreparationPreview(s),
-        false,
-      );
-    });
-  }
+  // Reset the progress bar — it's hidden until the byte budget arrives
+  // from main, then becomes visible during the upload.
+  uploadPreviewProgress.hidden = true;
+  uploadProgressBar.value = 0;
+  uploadProgressBar.max = 1;
+  uploadProgressText.textContent = '';
 
   uploadPreview.hidden = false;
 }
@@ -2044,39 +2032,22 @@ function setStep(id: string, status: StepStatus, detail?: string): void {
   paintSteps();
 }
 
-// Best-guess shape for the image_preparation create body, for preview only.
-function buildImagePreparationPreview(s: Series): Record<string, unknown> {
-  const seriesBody: Record<string, unknown> = { root_index: 0 };
-  if (s.perspective?.trim()) seriesBody.perspective = s.perspective.trim();
-  if (s.specifics?.trim()) seriesBody.specifics = s.specifics.trim();
-  return {
-    image_format: 'application/dicom',
-    series: seriesBody,
-    stack_upload: { uploaded_data: ['<upload_id_1>', '<upload_id_2>', '…'] },
-    _source_folder: s.folder,
-  };
-}
-
-function appendPayload(
-  parent: HTMLElement,
-  label: string,
-  body: unknown,
-  open: boolean,
-): void {
-  const det = document.createElement('details');
-  if (open) det.open = true;
-  const sum = document.createElement('summary');
-  sum.textContent = label;
-  det.appendChild(sum);
-  const pre = document.createElement('pre');
-  pre.textContent = JSON.stringify(body, null, 2);
-  det.appendChild(pre);
-  parent.appendChild(det);
-}
-
 function hideUploadPreview(): void {
   if (uploadInFlight) return; // don't let Esc/backdrop kill an in-flight call.
   uploadPreview.hidden = true;
+}
+
+// "12.4 MB / 248.7 MB · 5%" — the progress bar's status line. Each byte
+// counts twice in the budget (hash + upload), so we display the *upload-
+// equivalent* total (totalBytes / 2) so the figure reflects the actual
+// data size the user expects to see.
+function formatProgress(done: number, total: number, fileCount?: number): string {
+  if (total <= 0) return '';
+  const pct = Math.round((done / total) * 100);
+  const dataDone = humanBytes(done / 2);
+  const dataTotal = humanBytes(total / 2);
+  const filesPart = fileCount != null ? ` · ${fileCount} file${fileCount === 1 ? '' : 's'}` : '';
+  return `${dataDone} / ${dataTotal} · ${pct}%${filesPart}`;
 }
 
 // Live API submission --------------------------------------------------------
@@ -2290,6 +2261,8 @@ async function runImageUploadViaBridge(
 // because globals.d.ts is a module file (it has top-level exports), so the
 // types within it aren't visible from renderer.ts via the global scope.
 type _UploadEventPayload =
+  | { type: 'budget'; totalBytes: number; totalFiles: number }
+  | { type: 'bytes-progress'; doneBytes: number; totalBytes: number }
   | { type: 'series-start'; studyIdx: number; seriesIdx: number; folder: string; sliceCount: number }
   | { type: 'series-progress'; studyIdx: number; seriesIdx: number; phase: 'hash' | 'presign' | 'upload' | 'prepare'; done: number; total: number }
   | { type: 'series-done'; studyIdx: number; seriesIdx: number }
@@ -2302,6 +2275,20 @@ type _UploadEventPayload =
 
 function handleUploadEvent(e: _UploadEventPayload): void {
   switch (e.type) {
+    case 'budget':
+      // First event after discovery — we know the total byte budget. Show
+      // the progress bar from here on; main will start emitting
+      // bytes-progress as files get hashed and uploaded.
+      uploadPreviewProgress.hidden = false;
+      uploadProgressBar.value = 0;
+      uploadProgressBar.max = e.totalBytes * 2;
+      uploadProgressText.textContent = formatProgress(0, e.totalBytes * 2, e.totalFiles);
+      break;
+    case 'bytes-progress':
+      uploadProgressBar.value = e.doneBytes;
+      uploadProgressBar.max = e.totalBytes;
+      uploadProgressText.textContent = formatProgress(e.doneBytes, e.totalBytes);
+      break;
     case 'series-start':
       setStep('images', 'running',
         `study ${e.studyIdx + 1}, series ${e.seriesIdx + 1} — ${e.sliceCount} slice${e.sliceCount === 1 ? '' : 's'}`);
@@ -2486,6 +2473,7 @@ function finishWithError(_stepId: string, message: string): void {
   btnPreviewSubmit.textContent = 'Try again';
   btnPreviewCancel.disabled = false;
   btnPreviewCancel.textContent = 'Close';
+  uploadPreviewProgress.hidden = true;
   uploadPreviewResult.hidden = false;
   uploadPreviewResult.innerHTML = '';
 
@@ -2539,6 +2527,7 @@ function finishWithSuccess(
   btnPreviewSubmit.textContent = 'Sent ✓';
   btnPreviewCancel.disabled = false;
   btnPreviewCancel.textContent = 'Close';
+  uploadPreviewProgress.hidden = true;
   uploadPreviewResult.hidden = false;
   uploadPreviewResult.innerHTML = '';
   const caseUrl = `${apiBase}/cases/${caseId}`;

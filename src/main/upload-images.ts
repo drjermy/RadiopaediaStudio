@@ -41,6 +41,8 @@ export interface ImageUploadSpec {
 export type UploadPhase = 'hash' | 'presign' | 'upload' | 'prepare';
 
 export type UploadEvent =
+  | { type: 'budget'; totalBytes: number; totalFiles: number }
+  | { type: 'bytes-progress'; doneBytes: number; totalBytes: number }
   | { type: 'series-start'; studyIdx: number; seriesIdx: number; folder: string; sliceCount: number }
   | { type: 'series-progress'; studyIdx: number; seriesIdx: number; phase: UploadPhase; done: number; total: number }
   | { type: 'series-done'; studyIdx: number; seriesIdx: number }
@@ -76,6 +78,11 @@ class HttpError extends Error {
   }
 }
 
+interface DiscoveredSeries {
+  files: Array<{ path: string; size: number }>;
+  totalBytes: number;
+}
+
 export async function runImageUpload(
   spec: ImageUploadSpec,
   emit: EmitFn,
@@ -92,11 +99,57 @@ export async function runImageUpload(
 
   const apiBase = RADIOPAEDIA_API_BASE;
 
+  // Discovery pass: list each series' files and stat their sizes so we
+  // can publish a byte budget up front. The renderer uses this to drive
+  // a real progress bar that accounts for the actual upload size, not
+  // just step count. Stat-ing thousands of files is fast (~ms per
+  // hundred), so this only adds a brief "discovering…" beat at the top.
+  const discovered: DiscoveredSeries[][] = [];
+  let totalBytes = 0;
+  let totalFiles = 0;
+  for (const studyEntry of spec.studies) {
+    const studyDiscovery: DiscoveredSeries[] = [];
+    for (const series of studyEntry.series) {
+      if (signal.aborted) { emit({ type: 'aborted' }); return; }
+      const files = await listDicomFiles(series.folder);
+      if (files.length === 0) {
+        throw new Error(`Series folder has no files to upload: ${series.folder}`);
+      }
+      const sized = await Promise.all(files.map(async (path) => ({
+        path,
+        size: (await stat(path)).size,
+      })));
+      const sumBytes = sized.reduce((n, f) => n + f.size, 0);
+      totalBytes += sumBytes;
+      totalFiles += sized.length;
+      studyDiscovery.push({ files: sized, totalBytes: sumBytes });
+    }
+    discovered.push(studyDiscovery);
+  }
+  emit({ type: 'budget', totalBytes, totalFiles });
+
+  // Each byte counts twice toward the progress bar — once during the
+  // local hash, once during the S3 upload. Hashing 1 GB takes a few
+  // seconds; uploading 1 GB depends on the network. Treating both as
+  // equal-weighted bytes gives a smooth bar across both phases without
+  // any perceptual cliff between them.
+  const totalProgressBytes = totalBytes * 2;
+  let doneProgressBytes = 0;
+  const bumpBytes = (delta: number): void => {
+    doneProgressBytes = Math.min(doneProgressBytes + delta, totalProgressBytes);
+    emit({
+      type: 'bytes-progress',
+      doneBytes: doneProgressBytes,
+      totalBytes: totalProgressBytes,
+    });
+  };
+
   for (let si = 0; si < spec.studies.length; si++) {
     const studyEntry = spec.studies[si];
     for (let xi = 0; xi < studyEntry.series.length; xi++) {
       if (signal.aborted) { emit({ type: 'aborted' }); return; }
       const series = studyEntry.series[xi];
+      const discovery = discovered[si][xi];
       try {
         await uploadSeries({
           apiBase,
@@ -105,6 +158,8 @@ export async function runImageUpload(
           studyIdx: si,
           seriesIdx: xi,
           series,
+          discovery,
+          bumpBytes,
           token: () => requireToken(token),
           refreshToken: async () => { token = await getValidAccessToken(); },
           emit,
@@ -161,6 +216,8 @@ interface UploadSeriesArgs {
   studyIdx: number;
   seriesIdx: number;
   series: SeriesUploadSpec;
+  discovery: DiscoveredSeries;
+  bumpBytes: (delta: number) => void;
   token: () => string;
   refreshToken: () => Promise<void>;
   emit: EmitFn;
@@ -168,13 +225,9 @@ interface UploadSeriesArgs {
 }
 
 async function uploadSeries(args: UploadSeriesArgs): Promise<void> {
-  const { apiBase, caseId, studyId, studyIdx, seriesIdx, series, emit, signal } = args;
+  const { apiBase, caseId, studyId, studyIdx, seriesIdx, series, discovery, bumpBytes, emit, signal } = args;
 
-  // 1. Glob the DICOM files in the series folder.
-  const files = await listDicomFiles(series.folder);
-  if (files.length === 0) {
-    throw new Error(`Series folder has no files to upload: ${series.folder}`);
-  }
+  const files = discovery.files;
   emit({
     type: 'series-start',
     studyIdx, seriesIdx,
@@ -189,9 +242,10 @@ async function uploadSeries(args: UploadSeriesArgs): Promise<void> {
   emit({ type: 'series-progress', studyIdx, seriesIdx, phase: 'hash', done: 0, total: files.length });
   for (let i = 0; i < files.length; i++) {
     if (signal.aborted) return;
-    const buf = await readFile(files[i]);
+    const buf = await readFile(files[i].path);
     buffers.push(buf);
     hashes.push(createHash('sha256').update(buf).digest('hex'));
+    bumpBytes(files[i].size);
     emit({ type: 'series-progress', studyIdx, seriesIdx, phase: 'hash', done: i + 1, total: files.length });
   }
 
@@ -214,16 +268,25 @@ async function uploadSeries(args: UploadSeriesArgs): Promise<void> {
   emit({ type: 'series-progress', studyIdx, seriesIdx, phase: 'presign', done: 1, total: 1 });
 
   // 4. PUT bytes to S3 in parallel (bounded). Skip entries that came back
-  //    as already_uploaded.
-  const toUpload = uploads
-    .map((u, i) => ({ u, i }))
-    .filter(({ u }) => u.status !== 'already_uploaded' && u.url);
+  //    as already_uploaded — but credit their bytes to the progress bar
+  //    immediately so the bar stays accurate when an unchanged stack is
+  //    re-pushed.
+  const toUpload: Array<{ u: PresignEntry; i: number }> = [];
+  for (let i = 0; i < uploads.length; i++) {
+    const u = uploads[i];
+    if (u.status === 'already_uploaded' || !u.url) {
+      bumpBytes(files[i].size);
+    } else {
+      toUpload.push({ u, i });
+    }
+  }
   if (toUpload.length > 0) {
     let done = 0;
     emit({ type: 'series-progress', studyIdx, seriesIdx, phase: 'upload', done, total: toUpload.length });
     await runBounded(toUpload, S3_PUT_CONCURRENCY, async ({ u, i }) => {
       if (signal.aborted) return;
       await s3Put(u.url!, buffers[i], signal);
+      bumpBytes(files[i].size);
       done += 1;
       emit({ type: 'series-progress', studyIdx, seriesIdx, phase: 'upload', done, total: toUpload.length });
     });
