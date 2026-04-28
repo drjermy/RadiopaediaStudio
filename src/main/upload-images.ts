@@ -50,6 +50,7 @@ export type UploadPhase = 'stage' | 'hash' | 'presign' | 'upload' | 'prepare';
 export interface UploadedJob {
   studyIdx: number;
   seriesIdx: number;
+  caseId: number;
   studyId: number;
   jobId: string;
 }
@@ -311,6 +312,7 @@ async function runUploadAfterStaging(
           jobs.push({
             studyIdx: si,
             seriesIdx: xi,
+            caseId: spec.caseId,
             studyId: studyEntry.studyId,
             jobId,
           });
@@ -415,7 +417,7 @@ export async function checkUploadStatus(
     try {
       const status = await fetchJobStatus(apiBase, job, token, signal);
       out.push({ jobId: job.jobId, status });
-    } catch (e) {
+    } catch {
       // Single-job error doesn't kill the batch — record as pending and
       // let the user retry. (Ideally we'd log, but main doesn't have a
       // user-facing log surface here; the renderer can decide what to
@@ -444,10 +446,11 @@ async function fetchJobStatus(
   // creating a series — upload failure (no reason surfaced; see handoff
   // doc item #8).
   //
-  // The `case_id` segment is unused by check_upload_status server-side
-  // (the route matches on job_id alone), so we send '_' as a placeholder
-  // and skip threading the case id through every callsite.
-  const url = `${apiBase}/image_preparation/_/studies/${j.studyId}/upload/${encodeURIComponent(j.jobId)}`;
+  // The case_id segment looks redundant given the route matches on
+  // upload_id alone, but the controller's `find_case` runs in a
+  // before_action and 401s if the lookup fails — so the real case id has
+  // to be sent.
+  const url = `${apiBase}/image_preparation/${j.caseId}/studies/${j.studyId}/upload/${encodeURIComponent(j.jobId)}`;
   const res = await fetch(url, {
     headers: { 'Authorization': `Bearer ${bearer}`, 'Accept': 'application/json' },
     signal,

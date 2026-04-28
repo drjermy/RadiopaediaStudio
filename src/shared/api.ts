@@ -256,6 +256,45 @@ export interface DeleteSeriesRequest {
 //
 //   PUT /api/v1/cases/:case_id/mark_upload_finished
 //     no body params; finalises the draft.
+//
+//   GET /image_preparation/:case_id/studies/:study_id/upload/:upload_id
+//     polling endpoint for a per-series background job (job_id captured
+//     from the POST .../series response). The route looks like it matches
+//     on upload_id alone — and the controller body does — but the
+//     before_action runs `find_case` first and 401s with an empty body
+//     when Case.find_by_slug_or_id(:case_id) returns nil. So a real
+//     case_id is required even though it's logically redundant.
+//     Responses:
+//       202 { status: "pending-upload", job_id, … } while the GoodJob
+//                                                   record exists and
+//                                                   isn't finished.
+//       200 { study: { … }, series: { seriesId, status, … } } once the
+//                                                   job is done. status
+//                                                   is one of:
+//         'pending-trim' | 'pending-crop' |
+//         'pending-dicom-processing' | 'completed-dicom-processing' |
+//         'ready' (non-DICOM only).
+//       200 { study: { … } } (no `series` root) when the job finished
+//                                                   without creating a
+//                                                   Series — i.e. the
+//                                                   upload silently
+//                                                   failed (no reason
+//                                                   surfaced).
+//
+//     Note that this status enum maps poorly to user-visible state on
+//     the site. From the outside there are four states:
+//       1. study doesn't render (job not finished yet → 202)
+//       2. orange timer/clock placeholder
+//       3. images are visible (DICOM-rendered fallback) but the API
+//          still reports 'pending-dicom-processing' for several minutes
+//          while PNG conversion runs in the background
+//       4. processing fully complete → 'completed-dicom-processing'
+//          (or 'ready' for non-DICOM uploads)
+//     So a case can be browseable on the site while this endpoint still
+//     reports pending. The 'ready' status is only ever returned for
+//     non-DICOM uploads — DICOM cases terminate at
+//     'completed-dicom-processing'. Treat both as terminal-success on
+//     the client.
 // ---------------------------------------------------------------------------
 
 /** Max lengths (kept as named constants so UI + serialiser agree). */

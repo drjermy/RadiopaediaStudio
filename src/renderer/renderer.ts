@@ -2272,6 +2272,7 @@ async function refreshSentCase(idx: number): Promise<void> {
   const wireJobs = nonTerminal.map((j) => ({
     studyIdx: j.studyIdx,
     seriesIdx: j.seriesIdx,
+    caseId: c.caseId,
     studyId: j.studyId,
     jobId: j.jobId,
   }));
@@ -2582,6 +2583,7 @@ type _ProcessingStatus =
 interface _UploadedJob {
   studyIdx: number;
   seriesIdx: number;
+  caseId: number;
   studyId: number;
   jobId: string;
 }

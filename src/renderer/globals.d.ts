@@ -74,6 +74,7 @@ type ProcessingStatus =
 interface UploadedJob {
   studyIdx: number;
   seriesIdx: number;
+  caseId: number;
   studyId: number;
   jobId: string;
 }
