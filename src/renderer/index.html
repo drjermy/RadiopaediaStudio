@@ -132,6 +132,71 @@
       text-align: right;
     }
 
+    /* Sent-cases panel (#25). One row per past upload; each row carries a
+       summary derived from cached lastKnownStatus per job, plus actions to
+       open the case on Radiopaedia, refresh status, or remove the row. */
+    .sent-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      min-height: 80px;
+    }
+    .sent-empty {
+      font-size: 13px;
+      opacity: 0.65;
+      font-style: italic;
+      margin: 12px 0;
+    }
+    .sent-row {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      padding: 10px 12px;
+      border: 1px solid rgba(127, 127, 127, 0.25);
+      border-radius: 6px;
+      background: rgba(127, 127, 127, 0.04);
+    }
+    .sent-row-title {
+      font-weight: 600;
+      font-size: 13px;
+    }
+    .sent-row-meta {
+      font-size: 12px;
+      opacity: 0.75;
+    }
+    .sent-row-summary {
+      font-size: 12px;
+      margin-top: 2px;
+    }
+    .sent-row-summary.refreshing { opacity: 0.6; }
+    .sent-row-actions {
+      display: flex;
+      gap: 6px;
+      margin-top: 6px;
+      flex-wrap: wrap;
+    }
+    .sent-row-actions a, .sent-row-actions button {
+      font-size: 12px;
+      padding: 3px 8px;
+    }
+    .sent-row-actions a {
+      color: var(--accent);
+      text-decoration: none;
+      align-self: center;
+    }
+    .sent-row-actions a:hover { text-decoration: underline; }
+    .sent-status-pill {
+      display: inline-block;
+      font-size: 11px;
+      padding: 1px 6px;
+      border-radius: 3px;
+      margin-right: 4px;
+    }
+    .sent-status-pill.ready { background: rgba(60, 160, 80, 0.18); color: #5fb47a; }
+    .sent-status-pill.processing { background: rgba(180, 140, 0, 0.18); color: #d4a548; }
+    .sent-status-pill.failed { background: rgba(220, 38, 38, 0.18); color: #e57b7b; }
+    .sent-status-pill.unknown { background: rgba(127, 127, 127, 0.18); opacity: 0.7; }
+
     /* Log modal contents. The log used to live in a permanent strip at
        the bottom of the window; it's behind the header Log button now,
        so the body just needs to be readable + scrollable inside the
@@ -1188,6 +1253,7 @@
       <button id="btn-open-folder">Open Folder</button>
       <button id="btn-reset" hidden>Clear</button>
       <button id="btn-log" type="button">Log</button>
+      <button id="btn-sent" type="button">Sent</button>
       <button id="btn-auth" type="button">Sign in to Radiopaedia</button>
     </div>
   </div>
@@ -1315,6 +1381,26 @@
           </button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <div id="sent-modal" class="modal-overlay" hidden>
+    <div class="modal" role="dialog" aria-labelledby="sent-modal-title">
+      <div class="modal-header">
+        <h2 id="sent-modal-title">Sent to Radiopaedia</h2>
+        <button id="btn-sent-close" class="icon-btn" aria-label="Close" type="button">×</button>
+      </div>
+      <div class="modal-body">
+        <div id="sent-list" class="sent-list"></div>
+        <p id="sent-empty" class="sent-empty" hidden>
+          You haven't uploaded any cases yet. Once you do, they'll appear
+          here so you can track Radiopaedia's processing state.
+        </p>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-sent-refresh-all" type="button">Refresh all</button>
+        <button id="btn-sent-done" class="primary" type="button">Done</button>
+      </div>
     </div>
   </div>
 

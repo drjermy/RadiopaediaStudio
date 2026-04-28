@@ -16,9 +16,12 @@ import {
 import { getValidAccessToken } from './radiopaedia-auth';
 import { RADIOPAEDIA_API_BASE } from './radiopaedia-config';
 import {
+  checkUploadStatus,
   runImageUpload,
   type ImageUploadSpec,
+  type ProcessingStatus,
   type UploadEvent,
+  type UploadedJob,
 } from './upload-images';
 import {
   openAuthorizationPage,
@@ -209,6 +212,25 @@ app.whenReady().then(async () => {
   );
   ipcMain.handle('upload:abort', (): void => {
     uploadAbort?.abort();
+  });
+  // Sent-cases on-demand status check (issue #25). Single round-trip per
+  // job, no looping — the panel decides cadence. Aborts via its own
+  // controller so the panel can cancel mid-fetch when closed.
+  let statusCheckAbort: AbortController | null = null;
+  ipcMain.handle(
+    'upload:check-status',
+    async (_evt, jobs: UploadedJob[]): Promise<Array<{ jobId: string; status: ProcessingStatus }>> => {
+      statusCheckAbort?.abort();
+      statusCheckAbort = new AbortController();
+      try {
+        return await checkUploadStatus(jobs, statusCheckAbort.signal);
+      } finally {
+        statusCheckAbort = null;
+      }
+    },
+  );
+  ipcMain.handle('upload:cancel-status-check', (): void => {
+    statusCheckAbort?.abort();
   });
   ipcMain.handle('dialog:pickFolder', async (): Promise<string | null> => {
     if (!mainWindow) return null;

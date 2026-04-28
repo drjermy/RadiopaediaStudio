@@ -76,6 +76,15 @@ const btnLogClose = req<HTMLButtonElement>('btn-log-close');
 const btnLogDone = req<HTMLButtonElement>('btn-log-done');
 const btnLogClear = req<HTMLButtonElement>('btn-log-clear');
 
+// Sent-cases modal (#25).
+const sentModal = req<HTMLDivElement>('sent-modal');
+const sentList = req<HTMLDivElement>('sent-list');
+const sentEmpty = req<HTMLParagraphElement>('sent-empty');
+const btnSent = req<HTMLButtonElement>('btn-sent');
+const btnSentClose = req<HTMLButtonElement>('btn-sent-close');
+const btnSentDone = req<HTMLButtonElement>('btn-sent-done');
+const btnSentRefreshAll = req<HTMLButtonElement>('btn-sent-refresh-all');
+
 const inspectedTitle = req<HTMLHeadingElement>('inspected-title');
 const inspectedSummary = req<HTMLParagraphElement>('inspected-summary');
 const inspectedPath = req<HTMLDivElement>('inspected-path');
@@ -2092,8 +2101,206 @@ function maybeHideUploadPreview(): void {
 // in the viewport — a constant minor irritation. We track which overlays
 // are open via a small ref and lock the body whenever any are visible.
 function syncBodyScrollLock(): void {
-  const anyOpen = !uploadPreview.hidden || !authModal.hidden || !logModal.hidden;
+  const anyOpen = !uploadPreview.hidden || !authModal.hidden || !logModal.hidden || !sentModal.hidden;
   document.body.style.overflow = anyOpen ? 'hidden' : '';
+}
+
+// Sent-cases modal handlers ----------------------------------------------
+function openSentModal(): void {
+  renderSentList();
+  sentModal.hidden = false;
+  syncBodyScrollLock();
+  // Auto-refresh the most recent case's job statuses on open. Older
+  // entries get the user-driven Refresh button — auto-refreshing
+  // everything could be a lot of API calls if the list is long.
+  void refreshSentCase(0).catch(() => { /* ignore — UI handles errors per row */ });
+}
+function closeSentModal(): void {
+  sentModal.hidden = true;
+  syncBodyScrollLock();
+  // Cancel any in-flight status check started from this panel.
+  void window.uploadBridge.cancelStatusCheck().catch(() => { /* ignore */ });
+}
+
+btnSent.addEventListener('click', openSentModal);
+btnSentClose.addEventListener('click', closeSentModal);
+btnSentDone.addEventListener('click', closeSentModal);
+sentModal.addEventListener('click', (e) => {
+  if (e.target === sentModal) closeSentModal();
+});
+document.addEventListener('keydown', (e) => {
+  if (!sentModal.hidden && e.key === 'Escape') closeSentModal();
+});
+btnSentRefreshAll.addEventListener('click', async () => {
+  btnSentRefreshAll.disabled = true;
+  btnSentRefreshAll.textContent = 'Refreshing…';
+  try {
+    const cases = readSentCases();
+    for (let i = 0; i < cases.length; i++) {
+      await refreshSentCase(i).catch(() => { /* per-row errors handled in UI */ });
+    }
+  } finally {
+    btnSentRefreshAll.disabled = false;
+    btnSentRefreshAll.textContent = 'Refresh all';
+  }
+});
+
+function renderSentList(): void {
+  const cases = readSentCases();
+  sentList.innerHTML = '';
+  sentEmpty.hidden = cases.length > 0;
+  for (let i = 0; i < cases.length; i++) {
+    sentList.appendChild(buildSentRow(cases[i], i));
+  }
+}
+
+function buildSentRow(c: SentCase, idx: number): HTMLDivElement {
+  const row = document.createElement('div');
+  row.className = 'sent-row';
+  row.dataset.idx = String(idx);
+
+  const title = document.createElement('div');
+  title.className = 'sent-row-title';
+  title.textContent = `Case ${c.caseId} — ${c.title || '(untitled)'}`;
+  row.appendChild(title);
+
+  const meta = document.createElement('div');
+  meta.className = 'sent-row-meta';
+  meta.textContent = `Uploaded ${humanRelative(c.uploadedAt)} · ${c.jobs.length} series`;
+  row.appendChild(meta);
+
+  const summary = document.createElement('div');
+  summary.className = 'sent-row-summary';
+  summary.dataset.role = 'summary';
+  summary.appendChild(buildSentSummaryContent(c));
+  row.appendChild(summary);
+
+  const actions = document.createElement('div');
+  actions.className = 'sent-row-actions';
+
+  const openLink = document.createElement('a');
+  const caseUrl = `${c.apiBase}/cases/${c.caseId}`;
+  openLink.href = caseUrl;
+  openLink.textContent = 'Open on Radiopaedia →';
+  openLink.addEventListener('click', (e) => {
+    e.preventDefault();
+    void window.shellBridge.openExternal(caseUrl);
+  });
+  actions.appendChild(openLink);
+
+  const refreshBtn = document.createElement('button');
+  refreshBtn.type = 'button';
+  refreshBtn.textContent = 'Refresh';
+  refreshBtn.addEventListener('click', async () => {
+    refreshBtn.disabled = true;
+    refreshBtn.textContent = 'Refreshing…';
+    summary.classList.add('refreshing');
+    try {
+      await refreshSentCase(idx);
+    } finally {
+      refreshBtn.disabled = false;
+      refreshBtn.textContent = 'Refresh';
+      summary.classList.remove('refreshing');
+    }
+  });
+  actions.appendChild(refreshBtn);
+
+  const removeBtn = document.createElement('button');
+  removeBtn.type = 'button';
+  removeBtn.textContent = 'Remove';
+  removeBtn.title = 'Remove from this list (does not affect the case on Radiopaedia)';
+  removeBtn.addEventListener('click', () => {
+    removeSentCase(c.caseId, c.apiBase);
+    renderSentList();
+  });
+  actions.appendChild(removeBtn);
+
+  row.appendChild(actions);
+  return row;
+}
+
+function buildSentSummaryContent(c: SentCase): DocumentFragment {
+  const frag = document.createDocumentFragment();
+  let ready = 0, processing = 0, failed = 0, unknown = 0;
+  for (const j of c.jobs) {
+    const s = j.lastKnownStatus;
+    if (s === 'ready' || s === 'completed-dicom-processing') ready++;
+    else if (s === 'pending-upload' || s === 'pending-dicom-processing') processing++;
+    else if (s === 'failed') failed++;
+    else unknown++;
+  }
+  const total = c.jobs.length;
+
+  if (unknown === total) {
+    const span = document.createElement('span');
+    span.textContent = 'Status not checked yet — click Refresh.';
+    span.style.opacity = '0.7';
+    frag.appendChild(span);
+    return frag;
+  }
+
+  if (ready > 0) frag.appendChild(pill('ready', `${ready} ready`));
+  if (processing > 0) frag.appendChild(pill('processing', `${processing} processing`));
+  if (failed > 0) frag.appendChild(pill('failed', `${failed} failed`));
+  if (unknown > 0) frag.appendChild(pill('unknown', `${unknown} unchecked`));
+  return frag;
+}
+
+function pill(kind: 'ready' | 'processing' | 'failed' | 'unknown', text: string): HTMLSpanElement {
+  const span = document.createElement('span');
+  span.className = `sent-status-pill ${kind}`;
+  span.textContent = text;
+  return span;
+}
+
+async function refreshSentCase(idx: number): Promise<void> {
+  const cases = readSentCases();
+  const c = cases[idx];
+  if (!c) return;
+  // Only ask the server about jobs whose status isn't already terminally
+  // ready. We deliberately re-check 'failed' jobs: the API doesn't expose
+  // a permanent failure flag (handoff doc item #8), so the client-side
+  // 'failed' is a heuristic that can correct itself if the user retries.
+  const nonTerminal = c.jobs.filter((j) =>
+    j.lastKnownStatus !== 'ready'
+    && j.lastKnownStatus !== 'completed-dicom-processing');
+  if (nonTerminal.length === 0) {
+    // Nothing to do; just re-render to update the relative-time hint.
+    renderSentList();
+    return;
+  }
+  const wireJobs = nonTerminal.map((j) => ({
+    studyIdx: j.studyIdx,
+    seriesIdx: j.seriesIdx,
+    studyId: j.studyId,
+    jobId: j.jobId,
+  }));
+  const result = await window.uploadBridge.checkStatus(wireJobs);
+  // The bridge type returns string status; cast through the known union.
+  updateSentCaseJobStatuses(
+    c.caseId,
+    c.apiBase,
+    result.map((r) => ({ jobId: r.jobId, status: r.status as _ProcessingStatus })),
+  );
+  // Re-render to reflect persisted state.
+  renderSentList();
+}
+
+// Locale-friendly relative time: "12 minutes ago", "yesterday", etc.
+// Fairly coarse — exact timestamps live in lastCheckedAt / uploadedAt
+// for anyone who needs them.
+function humanRelative(iso: string): string {
+  const then = Date.parse(iso);
+  if (Number.isNaN(then)) return iso;
+  const seconds = Math.max(0, Math.floor((Date.now() - then) / 1000));
+  if (seconds < 60) return 'just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'} ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days} day${days === 1 ? '' : 's'} ago`;
+  return new Date(then).toLocaleDateString();
 }
 
 // Log-modal handlers --------------------------------------------------------
@@ -2366,6 +2573,18 @@ async function runImageUploadViaBridge(
 // Mirrors the UploadEventPayload union in globals.d.ts. Defined locally
 // because globals.d.ts is a module file (it has top-level exports), so the
 // types within it aren't visible from renderer.ts via the global scope.
+type _ProcessingStatus =
+  | 'pending-upload'
+  | 'pending-dicom-processing'
+  | 'completed-dicom-processing'
+  | 'ready'
+  | 'failed';
+interface _UploadedJob {
+  studyIdx: number;
+  seriesIdx: number;
+  studyId: number;
+  jobId: string;
+}
 type _UploadEventPayload =
   | { type: 'budget'; totalBytes: number; totalFiles: number }
   | { type: 'bytes-progress'; doneBytes: number; totalBytes: number }
@@ -2376,8 +2595,108 @@ type _UploadEventPayload =
   | { type: 'finalize-start' }
   | { type: 'finalize-done' }
   | { type: 'finalize-error'; message: string }
-  | { type: 'all-done'; caseId: number }
+  | { type: 'all-done'; caseId: number; jobs: _UploadedJob[] }
   | { type: 'aborted' };
+
+// Sent-cases persistence (#25). Each successful upload appends an entry
+// here; the Sent-cases panel reads + refreshes from this store. Survives
+// renderer reloads via localStorage; lost on a full uninstall (we'd
+// reach for the user-data directory if persistence-across-reinstall
+// matters — not yet needed).
+const SENT_CASES_KEY = 'radiopaedia-studio:sent-cases';
+const SENT_CASES_VERSION = 1;
+const SENT_CASES_MAX = 50;
+
+interface SentCase {
+  v: number;
+  caseId: number;
+  apiBase: string;
+  title: string;
+  uploadedAt: string; // ISO
+  jobs: Array<{
+    studyIdx: number;
+    seriesIdx: number;
+    studyId: number;
+    jobId: string;
+    lastKnownStatus: _ProcessingStatus | null;
+    lastCheckedAt: string | null;
+  }>;
+}
+
+function readSentCases(): SentCase[] {
+  try {
+    const raw = localStorage.getItem(SENT_CASES_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw) as SentCase[];
+    // Filter out anything not at the current schema version — quietly
+    // drop old rows rather than try to migrate. The data is already
+    // committed to Radiopaedia, so losing the local pointer is
+    // recoverable (user can navigate to it via the website).
+    return Array.isArray(arr) ? arr.filter((c) => c?.v === SENT_CASES_VERSION) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeSentCases(cases: SentCase[]): void {
+  try {
+    // Cap at SENT_CASES_MAX entries, newest first.
+    const trimmed = cases.slice(0, SENT_CASES_MAX);
+    localStorage.setItem(SENT_CASES_KEY, JSON.stringify(trimmed));
+  } catch {
+    // Storage full / disabled — non-fatal; the upload itself succeeded.
+  }
+}
+
+function recordSentCase(
+  caseId: number,
+  apiBase: string,
+  title: string,
+  jobs: _UploadedJob[],
+): void {
+  const entry: SentCase = {
+    v: SENT_CASES_VERSION,
+    caseId,
+    apiBase,
+    title,
+    uploadedAt: new Date().toISOString(),
+    jobs: jobs.map((j) => ({
+      ...j,
+      lastKnownStatus: null,
+      lastCheckedAt: null,
+    })),
+  };
+  const existing = readSentCases();
+  // Replace any prior entry for the same case (e.g. same retry) — newest
+  // representation wins.
+  const filtered = existing.filter((c) => !(c.caseId === caseId && c.apiBase === apiBase));
+  filtered.unshift(entry);
+  writeSentCases(filtered);
+}
+
+function updateSentCaseJobStatuses(
+  caseId: number,
+  apiBase: string,
+  updates: Array<{ jobId: string; status: _ProcessingStatus }>,
+): void {
+  const existing = readSentCases();
+  const idx = existing.findIndex((c) => c.caseId === caseId && c.apiBase === apiBase);
+  if (idx < 0) return;
+  const checkedAt = new Date().toISOString();
+  const target = existing[idx];
+  const byJobId = new Map(updates.map((u) => [u.jobId, u.status]));
+  target.jobs = target.jobs.map((j) => {
+    const next = byJobId.get(j.jobId);
+    if (next == null) return j;
+    return { ...j, lastKnownStatus: next, lastCheckedAt: checkedAt };
+  });
+  existing[idx] = target;
+  writeSentCases(existing);
+}
+
+function removeSentCase(caseId: number, apiBase: string): void {
+  writeSentCases(readSentCases().filter((c) => !(c.caseId === caseId && c.apiBase === apiBase)));
+}
 
 function phaseLabel(phase: 'stage' | 'hash' | 'presign' | 'upload' | 'prepare'): string {
   switch (phase) {
@@ -2458,6 +2777,14 @@ function handleUploadEvent(e: _UploadEventPayload): void {
       write(`upload: finalise failed: ${e.message}`);
       break;
     case 'all-done':
+      // Persist a record of this upload for the Sent-cases panel.
+      // partialCase carries the apiBase + caseId we used; lastPrepared
+      // has the title. Both should be set by this point — guarded
+      // anyway because the assertion isn't free.
+      if (partialCase && lastPrepared) {
+        recordSentCase(partialCase.caseId, partialCase.apiBase, lastPrepared.title, e.jobs);
+      }
+      break;
     case 'aborted':
       // The startImages promise resolves with the final status; the
       // surrounding helper handles the UI transitions there.

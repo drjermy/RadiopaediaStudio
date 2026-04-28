@@ -80,4 +80,9 @@ contextBridge.exposeInMainWorld('uploadBridge', {
     ipcRenderer.on('upload:event', sub);
     return () => { ipcRenderer.removeListener('upload:event', sub); };
   },
+  // On-demand processing-state check for the Sent-cases panel (#25).
+  checkStatus: (jobs: unknown): Promise<Array<{ jobId: string; status: string }>> =>
+    ipcRenderer.invoke('upload:check-status', jobs),
+  cancelStatusCheck: (): Promise<void> =>
+    ipcRenderer.invoke('upload:cancel-status-check'),
 });

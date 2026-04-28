@@ -65,6 +65,18 @@ interface UploadStartSpec {
 type UploadStartResult = { status: 'ok' | 'error' | 'aborted'; message?: string };
 
 type UploadPhase = 'stage' | 'hash' | 'presign' | 'upload' | 'prepare';
+type ProcessingStatus =
+  | 'pending-upload'
+  | 'pending-dicom-processing'
+  | 'completed-dicom-processing'
+  | 'ready'
+  | 'failed';
+interface UploadedJob {
+  studyIdx: number;
+  seriesIdx: number;
+  studyId: number;
+  jobId: string;
+}
 type UploadEventPayload =
   | { type: 'budget'; totalBytes: number; totalFiles: number }
   | { type: 'bytes-progress'; doneBytes: number; totalBytes: number }
@@ -75,13 +87,15 @@ type UploadEventPayload =
   | { type: 'finalize-start' }
   | { type: 'finalize-done' }
   | { type: 'finalize-error'; message: string }
-  | { type: 'all-done'; caseId: number }
+  | { type: 'all-done'; caseId: number; jobs: UploadedJob[] }
   | { type: 'aborted' };
 
 interface UploadBridge {
   startImages(spec: UploadStartSpec): Promise<UploadStartResult>;
   abort(): Promise<void>;
   onEvent(handler: (e: UploadEventPayload) => void): () => void;
+  checkStatus(jobs: UploadedJob[]): Promise<Array<{ jobId: string; status: ProcessingStatus }>>;
+  cancelStatusCheck(): Promise<void>;
 }
 
 // viewer.js → window.viewerAPI (see src/renderer/viewer.js).
