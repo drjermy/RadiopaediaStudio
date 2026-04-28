@@ -202,11 +202,17 @@
     .study-block.collapsed .study-body { display: none; }
     .study-summary .series-list {
       margin: 0;
-      padding: 0;
+      padding: 0 0 6px 0;
       list-style: none;
       display: flex;
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
       gap: 14px;
+      overflow-x: auto;
+      overflow-y: hidden;
+      /* Reserve space for the inactive horizontal scrollbar so thumbnails
+         don't shift down when it appears. macOS overlay scrollbars normally
+         take 0px when idle; explicit padding-bottom keeps the row stable
+         when the scrollbar is shown. */
     }
     .study-summary .series-list li {
       display: flex;
@@ -214,6 +220,7 @@
       align-items: flex-start;
       gap: 6px;
       width: 192px;
+      flex: 0 0 auto;
       padding: 6px;
       color: #555;
       font-size: 12px;
