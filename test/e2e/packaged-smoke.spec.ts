@@ -189,6 +189,42 @@ test.describe('packaged app — boot integrity', () => {
       uploadBridge: true,
     });
   });
+
+  test('radiopaedia.getApiBase returns the configured https base', async () => {
+    const win = await app.firstWindow();
+    const apiBase = await win.evaluate(() => {
+      const w = window as unknown as {
+        radiopaedia: { getApiBase: () => Promise<string> };
+      };
+      return w.radiopaedia.getApiBase();
+    });
+    // Don't pin the exact value — staging vs prod builds use different
+    // hosts and the value is set at build time. Just guard the contract:
+    // it's an https URL with no trailing slash, so the renderer can
+    // assemble request URLs by string-concat without surprises.
+    expect(apiBase).toMatch(/^https:\/\/[^/]+(\.[^/]+)+$/);
+  });
+
+  test('shellBridge.openExternal rejects non-http URLs', async () => {
+    const win = await app.firstWindow();
+    // The main-side handler whitelists http(s) so a renderer-side bug
+    // can't ask main to launch arbitrary file:// or shell URLs. Verify
+    // the whitelist actually holds in the packaged binary — preload
+    // wiring or a refactor that loosens the regex would silently
+    // remove the protection otherwise.
+    const result = await win.evaluate(async () => {
+      const w = window as unknown as {
+        shellBridge: { openExternal: (u: string) => Promise<void> };
+      };
+      try {
+        await w.shellBridge.openExternal('file:///etc/passwd');
+        return 'allowed';
+      } catch {
+        return 'rejected';
+      }
+    });
+    expect(result).toBe('rejected');
+  });
 });
 
 test.describe('packaged app — process lifecycle', () => {
