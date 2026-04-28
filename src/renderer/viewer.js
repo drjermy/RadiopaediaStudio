@@ -472,10 +472,28 @@ async function open(folder, container, opts = {}) {
   slabSpacing = 1;
   if (keyHandler) document.removeEventListener('keydown', keyHandler);
   keyHandler = (e) => {
-    if (!currentIsVolume || !currentViewport) return;
+    if (!currentViewport) return;
     if (e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
     if (e.metaKey || e.ctrlKey || e.altKey) return;
 
+    // Arrow keys scroll one image. Works in both volume and stack modes.
+    // For volumes at non-native slab spacing we step a full slab (mirrors
+    // wheelHandler) so arrow ↓ advances to the next visible slab rather
+    // than fractionally between slabs.
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const dir = e.key === 'ArrowDown' ? 1 : -1;
+      if (currentIsVolume) {
+        const grid = rawNormalSpacingMm();
+        const steps = grid > 0 ? Math.max(1, Math.round(slabSpacing / grid)) : 1;
+        currentViewport.scroll(dir * steps);
+      } else {
+        currentViewport.scroll(dir);
+      }
+      return;
+    }
+
+    if (!currentIsVolume) return;
     const orientMap = { a: OrientationAxis.AXIAL, c: OrientationAxis.CORONAL, s: OrientationAxis.SAGITTAL };
     const key = e.key.toLowerCase();
     if (orientMap[key]) {
