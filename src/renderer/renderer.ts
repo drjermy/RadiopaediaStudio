@@ -19,7 +19,7 @@ import type {
   TrimRequest,
   WindowPresetsResponse,
   WindowSpec,
-} from '../shared/api';
+} from '../shared/api.js';
 import {
   CASE_CLINICAL_HISTORY_MAX,
   CASE_TITLE_MAX,
@@ -30,7 +30,7 @@ import {
   buildStudyCreatePayload,
   defaultModalityForSeries,
   deriveDefaultCase,
-} from '../shared/api';
+} from '../shared/api.js';
 import type { ViewerStateDetail } from './globals';
 
 // Elements ------------------------------------------------------------------
