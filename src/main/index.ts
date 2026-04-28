@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell } from 'electron';
 import { statSync } from 'fs';
 import * as path from 'path';
 import { BackendHandle, startBackend, stopBackend } from './python-manager';
@@ -30,11 +30,18 @@ const rendererRoot = app.isPackaged
   ? path.join(__dirname, '..', '..', 'src', 'renderer')
   : path.join(projectRoot, 'src', 'renderer');
 
+// In packaged builds the .icns embedded in the .app bundle drives the icon
+// everywhere. In dev (`electron .`) the running binary is Electron's, so
+// macOS shows the default Electron diamond — pass the same source PNG
+// explicitly so dev runs match what users will see.
+const appIconPath = path.join(projectRoot, 'build-resources', 'icon.png');
+
 async function createWindow(): Promise<void> {
   mainWindow = new BrowserWindow({
     width: 640,
     height: 480,
     title: 'Radiopaedia Studio',
+    icon: appIconPath,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -54,6 +61,14 @@ async function createWindow(): Promise<void> {
 }
 
 app.whenReady().then(async () => {
+  // macOS Dock icon: in packaged builds the .app bundle's .icns drives
+  // this; in dev the binary is Electron itself, so override at runtime.
+  // No-op on Linux/Windows (app.dock is undefined there).
+  if (!app.isPackaged && process.platform === 'darwin' && app.dock) {
+    const icon = nativeImage.createFromPath(appIconPath);
+    if (!icon.isEmpty()) app.dock.setIcon(icon);
+  }
+
   const roots = {
     projectRoot,
     resourcesPath: process.resourcesPath,
