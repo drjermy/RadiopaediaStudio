@@ -893,6 +893,38 @@
       padding: 10px 16px;
       border-top: 1px solid rgba(127, 127, 127, 0.25);
     }
+    /* Auth header button: subtle "signed in" green, regular when not. */
+    #btn-auth.authed {
+      border-color: #2c8c3a;
+      color: #2c8c3a;
+    }
+    .auth-modal-section {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      font-size: 13px;
+    }
+    .auth-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .auth-row input[type="text"] {
+      flex: 1 1 240px;
+      min-width: 180px;
+      font: inherit;
+      font-size: 13px;
+      padding: 5px 8px;
+      border-radius: 4px;
+      border: 1px solid rgba(127, 127, 127, 0.4);
+      background: transparent;
+      color: inherit;
+    }
+    .auth-error {
+      color: #d14;
+      font-size: 12px;
+    }
     .upload-series-row {
       display: flex;
       gap: 10px;
@@ -1048,6 +1080,7 @@
     <div class="header-actions">
       <button id="btn-open-folder">Open Folder</button>
       <button id="btn-reset" hidden>Clear</button>
+      <button id="btn-auth" type="button">Sign in to Radiopaedia</button>
     </div>
   </div>
 
@@ -1178,6 +1211,43 @@
   </div>
 
   <div id="log"></div>
+
+  <div id="auth-modal" class="modal-overlay" hidden>
+    <div class="modal" role="dialog" aria-labelledby="auth-modal-title">
+      <div class="modal-header">
+        <h2 id="auth-modal-title">Radiopaedia sign-in</h2>
+        <button id="btn-auth-close" class="icon-btn" aria-label="Close" type="button">×</button>
+      </div>
+      <div class="modal-body auth-modal-section">
+        <div id="auth-status"></div>
+        <div id="auth-signed-out" hidden>
+          <p class="modal-info" style="margin-bottom: 10px;">
+            Authorise Radiopaedia Studio to upload on your behalf.
+            We'll open your browser to Radiopaedia. After you authorise,
+            paste the code Radiopaedia shows you below.
+          </p>
+          <button id="btn-auth-open" class="primary" type="button">Open Radiopaedia →</button>
+          <div class="auth-error" id="auth-open-error" hidden></div>
+          <div class="auth-row" style="margin-top: 12px;">
+            <span style="opacity: 0.75;">Authorization code:</span>
+            <input id="auth-code-input" type="text" placeholder="paste here" autocomplete="off" spellcheck="false" />
+            <button id="btn-auth-submit" type="button">Submit code</button>
+          </div>
+          <div class="auth-error" id="auth-exchange-error" hidden></div>
+        </div>
+        <div id="auth-signed-in" hidden>
+          <p class="modal-info" style="margin-bottom: 10px;">
+            <strong>Signed in to Radiopaedia.</strong>
+            Tokens are stored in your system keychain via Electron safeStorage.
+          </p>
+          <button id="btn-auth-signout" type="button">Sign out</button>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-auth-done" class="primary" type="button">Done</button>
+      </div>
+    </div>
+  </div>
 
   <div id="upload-preview" class="modal-overlay" hidden>
     <div class="modal" role="dialog" aria-labelledby="upload-preview-title">

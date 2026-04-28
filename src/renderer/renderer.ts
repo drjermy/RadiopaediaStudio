@@ -94,6 +94,20 @@ const btnAddCase = req<HTMLButtonElement>('btn-add-case');
 const btnUploadBack = req<HTMLButtonElement>('btn-upload-back');
 const uploadSeriesListEl = req<HTMLDivElement>('upload-series-list');
 
+// Auth modal + header button.
+const btnAuth = req<HTMLButtonElement>('btn-auth');
+const authModal = req<HTMLDivElement>('auth-modal');
+const authSignedOut = req<HTMLDivElement>('auth-signed-out');
+const authSignedIn = req<HTMLDivElement>('auth-signed-in');
+const btnAuthOpen = req<HTMLButtonElement>('btn-auth-open');
+const authOpenError = req<HTMLDivElement>('auth-open-error');
+const authCodeInput = req<HTMLInputElement>('auth-code-input');
+const btnAuthSubmit = req<HTMLButtonElement>('btn-auth-submit');
+const authExchangeError = req<HTMLDivElement>('auth-exchange-error');
+const btnAuthSignout = req<HTMLButtonElement>('btn-auth-signout');
+const btnAuthClose = req<HTMLButtonElement>('btn-auth-close');
+const btnAuthDone = req<HTMLButtonElement>('btn-auth-done');
+
 // Upload-preview modal elements.
 const uploadPreview = req<HTMLDivElement>('upload-preview');
 const uploadPreviewBlurb = req<HTMLParagraphElement>('upload-preview-blurb');
@@ -137,6 +151,10 @@ interface ViewerContext {
 let state: AppState = 'idle';
 let pending: PendingInspect | null = null;
 let anonOutput: string | null = null;
+// Cached auth state. Refreshed on boot, after a successful exchange, and
+// after sign-out. The Add-to-Radiopaedia button + the upload pipeline
+// pre-flight both read this.
+let isAuthed = false;
 let windowPresets: WindowPresetsResponse = {};
 let studyMeta: SummaryPayload | null = null; // { studies: [{ ..., series: [...] }, ...] }
 let viewerContext: ViewerContext | null = null; // { studyIdx, seriesIdx, folder } for Save
@@ -175,8 +193,15 @@ function setState(next: AppState): void {
   panelDone.classList.toggle('active', next === 'done');
   panelUpload.classList.toggle('active', next === 'upload');
   btnReset.hidden = next === 'idle';
-  // "Add to Radiopaedia" only shown when we have a finished case.
+  // "Add to Radiopaedia" only shown when we have a finished case AND the
+  // user is signed in. Auth state is the gate so users can't get dragged
+  // into the OAuth flow mid-upload — the header button drives sign-in
+  // before this point.
   btnAddCase.hidden = next !== 'done' || !studyMeta || !anonOutput;
+  btnAddCase.disabled = !isAuthed;
+  btnAddCase.title = isAuthed
+    ? ''
+    : 'Sign in to Radiopaedia from the header before uploading.';
   // Cancel button is only meaningful while a run is streaming.
   btnCancelRun.hidden = next !== 'processing' || !currentAbortController;
   if (next === 'upload') renderUploadSeriesList();
@@ -2116,7 +2141,13 @@ async function uploadCaseAndStudies(p: PreparedUpload): Promise<void> {
     return finishWithError('preflight', `Couldn't reach the auth bridge — ${(e as Error).message}`);
   }
   if (!token) {
-    return showAuthPromptAndRetry(p);
+    // The header gate should normally prevent this, but tokens can expire
+    // between authed-cache refresh and submit. Mark un-authed and redirect.
+    setAuthed(false);
+    return finishWithError(
+      'auth',
+      'Token expired or missing. Open the Radiopaedia button in the header to sign in again.',
+    );
   }
 
   // 1. Auth + quota check.
@@ -2193,163 +2224,138 @@ function apiCallFailed(stepId: string, err: unknown): void {
   finishWithError(stepId, `${e?.message ?? 'request failed'}${status}${body}`);
 }
 
-// Inline OAuth flow inside the upload modal. When the upload pre-flight
-// finds no valid access token, we render the OOB authorisation flow here
-// rather than redirecting to a Settings panel that doesn't exist yet:
-//
-//   1. "Sign in to Radiopaedia" → opens the system browser at /oauth/authorize.
-//   2. The user authorises on the site, sees an authorization code.
-//   3. They paste the code into our input + click Submit code.
-//   4. We exchange via the radiopaedia bridge; on success we auto-retry
-//      the upload that triggered this.
-//
-// This is the minimum-viable auth UX. A proper Settings panel (with sign
-// out, current user display, client-credential override) is a follow-up.
-function showAuthPromptAndRetry(p: PreparedUpload): void {
-  uploadInFlight = false;
-  btnPreviewSubmit.disabled = true;
-  btnPreviewSubmit.textContent = 'Send to Radiopaedia';
-  btnPreviewCancel.disabled = false;
-  btnPreviewCancel.textContent = 'Close';
+// Header-driven auth -------------------------------------------------------
+// The user signs in once via the header button before they ever reach the
+// Add-to-Radiopaedia path; setState() gates that button on `isAuthed`. The
+// auth modal here is the only place the OOB OAuth dance lives.
 
-  uploadPreviewResult.hidden = false;
-  uploadPreviewResult.innerHTML = '';
+function setAuthed(authed: boolean): void {
+  isAuthed = authed;
+  btnAuth.classList.toggle('authed', authed);
+  btnAuth.textContent = authed ? 'Radiopaedia ✓' : 'Sign in to Radiopaedia';
+  // Re-paint state-dependent UI (Add-to-Radiopaedia disabled flag, etc.).
+  if (state === 'done') setState('done');
+}
 
-  const banner = document.createElement('div');
-  banner.className = 'modal-error';
-  banner.innerHTML = `
-    <div><strong>Sign in to Radiopaedia required.</strong></div>
-    <div style="margin-top: 6px; opacity: 0.85;">
-      No valid access token is stored. Authorise this app to upload on your
-      behalf, then paste the code Radiopaedia shows you.
-    </div>
-  `;
-  uploadPreviewResult.appendChild(banner);
+async function refreshAuthState(): Promise<void> {
+  try {
+    const token = await window.radiopaedia.getValidAccessToken();
+    setAuthed(token !== null);
+  } catch {
+    setAuthed(false);
+  }
+}
 
-  const authBlock = document.createElement('div');
-  authBlock.style.marginTop = '10px';
-  authBlock.style.display = 'flex';
-  authBlock.style.flexDirection = 'column';
-  authBlock.style.gap = '8px';
+function paintAuthModal(): void {
+  authSignedOut.hidden = isAuthed;
+  authSignedIn.hidden = !isAuthed;
+  authOpenError.hidden = true;
+  authOpenError.textContent = '';
+  authExchangeError.hidden = true;
+  authExchangeError.textContent = '';
+  btnAuthOpen.disabled = false;
+  btnAuthOpen.textContent = 'Open Radiopaedia →';
+  btnAuthSubmit.disabled = false;
+  btnAuthSubmit.textContent = 'Submit code';
+  authCodeInput.disabled = false;
+  authCodeInput.value = '';
+}
 
-  const openBtn = document.createElement('button');
-  openBtn.type = 'button';
-  openBtn.className = 'primary';
-  openBtn.textContent = 'Sign in to Radiopaedia →';
-  openBtn.style.alignSelf = 'flex-start';
-  // A line under the Sign-in button where we surface auth failures
-  // (e.g. missing OAuth client credentials) inline — the in-app log
-  // strip is too easy to miss.
-  const openErr = document.createElement('div');
-  openErr.style.fontSize = '12px';
-  openErr.style.color = '#d14';
-  openErr.style.lineHeight = '1.4';
-  openErr.hidden = true;
+function openAuthModal(): void {
+  paintAuthModal();
+  authModal.hidden = false;
+  if (!isAuthed) authCodeInput.focus();
+}
+function closeAuthModal(): void {
+  authModal.hidden = true;
+}
 
-  openBtn.addEventListener('click', async () => {
-    openBtn.disabled = true;
-    openBtn.textContent = 'Opening browser…';
-    openErr.hidden = true;
-    openErr.textContent = '';
-    try {
-      const result = await window.radiopaedia.openAuthorizationPage();
-      if (result === 'error') {
-        write('failed to open the authorization page — check OAuth client config');
-        openBtn.disabled = false;
-        openBtn.textContent = 'Sign in to Radiopaedia →';
-        openErr.hidden = false;
-        openErr.innerHTML =
-          'Failed to open the authorization page. The most common cause is ' +
-          'missing OAuth client credentials. Set <code>RADIOPAEDIA_CLIENT_ID</code> ' +
-          'and <code>RADIOPAEDIA_CLIENT_SECRET</code> in <code>src/main/radiopaedia-config.ts</code> ' +
-          '(it\'s gitignored), then re-run <code>npm run build:frontend</code> ' +
-          'and restart the app.';
-        return;
-      }
-      openBtn.textContent = 'Browser opened — paste the code below';
-      codeInput.focus();
-    } catch (e) {
-      write(`auth: ${(e as Error).message ?? e}`);
-      openBtn.disabled = false;
-      openBtn.textContent = 'Sign in to Radiopaedia →';
-      openErr.hidden = false;
-      openErr.textContent = `Auth error: ${(e as Error).message ?? e}`;
-    }
-  });
-  authBlock.appendChild(openBtn);
-  authBlock.appendChild(openErr);
+btnAuth.addEventListener('click', openAuthModal);
+btnAuthClose.addEventListener('click', closeAuthModal);
+btnAuthDone.addEventListener('click', closeAuthModal);
+authModal.addEventListener('click', (e) => {
+  if (e.target === authModal) closeAuthModal();
+});
+document.addEventListener('keydown', (e) => {
+  if (!authModal.hidden && e.key === 'Escape') closeAuthModal();
+});
 
-  const codeRow = document.createElement('div');
-  codeRow.style.display = 'flex';
-  codeRow.style.gap = '8px';
-  codeRow.style.alignItems = 'center';
-
-  const codeLabel = document.createElement('span');
-  codeLabel.textContent = 'Authorization code:';
-  codeLabel.style.fontSize = '13px';
-  codeLabel.style.opacity = '0.75';
-  codeRow.appendChild(codeLabel);
-
-  const codeInput = document.createElement('input');
-  codeInput.type = 'text';
-  codeInput.placeholder = 'paste here';
-  codeInput.autocomplete = 'off';
-  codeInput.spellcheck = false;
-  codeInput.style.flex = '1 1 auto';
-  codeInput.style.font = 'inherit';
-  codeInput.style.fontSize = '13px';
-  codeInput.style.padding = '4px 8px';
-  codeInput.style.borderRadius = '4px';
-  codeInput.style.border = '1px solid rgba(127,127,127,0.4)';
-  codeInput.style.background = 'transparent';
-  codeInput.style.color = 'inherit';
-  codeRow.appendChild(codeInput);
-
-  const submitBtn = document.createElement('button');
-  submitBtn.type = 'button';
-  submitBtn.textContent = 'Submit code';
-  submitBtn.addEventListener('click', async () => {
-    const code = codeInput.value.trim();
-    if (!code) {
-      codeInput.focus();
+btnAuthOpen.addEventListener('click', async () => {
+  btnAuthOpen.disabled = true;
+  btnAuthOpen.textContent = 'Opening browser…';
+  authOpenError.hidden = true;
+  authOpenError.textContent = '';
+  try {
+    const result = await window.radiopaedia.openAuthorizationPage();
+    if (result === 'error') {
+      btnAuthOpen.disabled = false;
+      btnAuthOpen.textContent = 'Open Radiopaedia →';
+      authOpenError.hidden = false;
+      authOpenError.innerHTML =
+        'Failed to open the authorization page. Most common cause: missing ' +
+        'OAuth client credentials. Set <code>RADIOPAEDIA_CLIENT_ID</code> ' +
+        'and <code>RADIOPAEDIA_CLIENT_SECRET</code> in ' +
+        '<code>src/main/radiopaedia-config.ts</code> (gitignored), then ' +
+        're-run <code>npm run build:frontend</code> and restart the app.';
+      write('failed to open the authorization page — check OAuth client config');
       return;
     }
-    submitBtn.disabled = true;
-    codeInput.disabled = true;
-    submitBtn.textContent = 'Exchanging…';
-    try {
-      const result = await window.radiopaedia.exchangeAuthorizationCode(code);
-      if (result === 'ok') {
-        write('signed in to Radiopaedia — retrying upload…');
-        // Resume the upload pipeline now that we have a token.
-        void uploadCaseAndStudies(p);
-      } else {
-        submitBtn.disabled = false;
-        codeInput.disabled = false;
-        submitBtn.textContent = 'Submit code';
-        write('exchange failed — code may be expired or already used. Try signing in again.');
-        const errLine = document.createElement('div');
-        errLine.style.color = '#d14';
-        errLine.style.fontSize = '12px';
-        errLine.style.marginTop = '4px';
-        errLine.textContent = 'Exchange failed — try signing in and pasting a fresh code.';
-        authBlock.appendChild(errLine);
-      }
-    } catch (e) {
-      submitBtn.disabled = false;
-      codeInput.disabled = false;
-      submitBtn.textContent = 'Submit code';
-      write(`exchange error: ${(e as Error).message ?? e}`);
-    }
-  });
-  codeInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') submitBtn.click();
-  });
-  codeRow.appendChild(submitBtn);
+    btnAuthOpen.textContent = 'Browser opened — paste the code below';
+    authCodeInput.focus();
+  } catch (e) {
+    btnAuthOpen.disabled = false;
+    btnAuthOpen.textContent = 'Open Radiopaedia →';
+    authOpenError.hidden = false;
+    authOpenError.textContent = `Auth error: ${(e as Error).message ?? e}`;
+    write(`auth: ${(e as Error).message ?? e}`);
+  }
+});
 
-  authBlock.appendChild(codeRow);
-  uploadPreviewResult.appendChild(authBlock);
-}
+btnAuthSubmit.addEventListener('click', async () => {
+  const code = authCodeInput.value.trim();
+  if (!code) { authCodeInput.focus(); return; }
+  btnAuthSubmit.disabled = true;
+  authCodeInput.disabled = true;
+  btnAuthSubmit.textContent = 'Exchanging…';
+  authExchangeError.hidden = true;
+  try {
+    const result = await window.radiopaedia.exchangeAuthorizationCode(code);
+    if (result === 'ok') {
+      setAuthed(true);
+      paintAuthModal();
+      write('signed in to Radiopaedia');
+    } else {
+      btnAuthSubmit.disabled = false;
+      authCodeInput.disabled = false;
+      btnAuthSubmit.textContent = 'Submit code';
+      authExchangeError.hidden = false;
+      authExchangeError.textContent =
+        'Exchange failed. Codes are single-use and short-lived — try signing in again to get a fresh one.';
+      write('auth-code exchange failed');
+    }
+  } catch (e) {
+    btnAuthSubmit.disabled = false;
+    authCodeInput.disabled = false;
+    btnAuthSubmit.textContent = 'Submit code';
+    authExchangeError.hidden = false;
+    authExchangeError.textContent = `Exchange error: ${(e as Error).message ?? e}`;
+  }
+});
+authCodeInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') btnAuthSubmit.click();
+});
+
+btnAuthSignout.addEventListener('click', async () => {
+  btnAuthSignout.disabled = true;
+  try {
+    await window.credentials.clearRadiopaediaTokens();
+    setAuthed(false);
+    paintAuthModal();
+    write('signed out of Radiopaedia');
+  } finally {
+    btnAuthSignout.disabled = false;
+  }
+});
 
 function finishWithError(_stepId: string, message: string): void {
   uploadInFlight = false;
@@ -2451,3 +2457,4 @@ if (bootDraft) {
 setState('idle');
 loadPresets();
 void restoreLastFolder();
+void refreshAuthState();
