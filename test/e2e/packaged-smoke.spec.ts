@@ -7,14 +7,10 @@
 // Skipped automatically when build/mac-arm64/Radiopaedia Studio.app is
 // absent — keeps `npm run test:e2e` green for contributors who haven't run
 // `npm run pack` yet. CI / release flows should run pack first.
-//
-// Runs the actual .app binary (not `electron .` against the source tree),
-// listens for any failed file:// request from the renderer, and walks the
-// Sign-in modal happy path to guard against the regression class where the
-// header button silently does nothing because a JS module failed to load.
 
 import { test, expect, _electron as electron, ElectronApplication } from '@playwright/test';
-import { existsSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 
 const APP_BIN = path.join(
@@ -27,7 +23,49 @@ const APP_BIN = path.join(
   'Radiopaedia Studio',
 );
 
-test.describe('packaged app', () => {
+// Pidfiles live where main writes them: `app.getPath('userData')`. On macOS
+// that's ~/Library/Application Support/<productName>/. Hard-coded here
+// rather than queried via Electron because these tests run outside the
+// Electron context.
+const USER_DATA = path.join(
+  os.homedir(),
+  'Library',
+  'Application Support',
+  'Radiopaedia Studio',
+);
+
+function readPidfile(name: string): number {
+  try {
+    return Number.parseInt(readFileSync(path.join(USER_DATA, name), 'utf8').trim(), 10);
+  } catch {
+    return 0;
+  }
+}
+
+function isAlive(pid: number): boolean {
+  if (!pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitUntil(
+  predicate: () => boolean | Promise<boolean>,
+  timeoutMs = 3000,
+  intervalMs = 50,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await predicate()) return true;
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  return predicate() as Promise<boolean>;
+}
+
+test.describe('packaged app — boot integrity', () => {
   test.skip(!existsSync(APP_BIN), `packaged binary missing — run \`npm run pack\``);
 
   // Per-test app handle so afterEach can close it even if an assertion
@@ -89,5 +127,149 @@ test.describe('packaged app', () => {
     const signedOutVisible = await win.locator('#auth-signed-out').isVisible();
     const signedInVisible = await win.locator('#auth-signed-in').isVisible();
     expect(signedOutVisible !== signedInVisible, 'exactly one auth panel should be visible').toBe(true);
+  });
+
+  test('python and node sidecars respond to /health', async () => {
+    const win = await app.firstWindow();
+    await expect(win.locator('#drop')).toBeVisible();
+    // Discover the sidecar ports through the renderer's IPC bridges (the
+    // same path the real renderer uses). Then hit /health from the page
+    // context — fetch from the test process would work too, but driving
+    // it from the page proves the bridge end-to-end.
+    const health = await win.evaluate(async () => {
+      const w = window as unknown as {
+        backend: { getPort: () => Promise<number | null> };
+        nodeBackend: { getPort: () => Promise<number | null> };
+      };
+      const [pyPort, nodePort] = await Promise.all([
+        w.backend.getPort(),
+        w.nodeBackend.getPort(),
+      ]);
+      if (!pyPort || !nodePort) return { pyPort, nodePort, py: false, node: false };
+      const [pyRes, nodeRes] = await Promise.all([
+        fetch(`http://127.0.0.1:${pyPort}/health`),
+        fetch(`http://127.0.0.1:${nodePort}/health`),
+      ]);
+      return { pyPort, nodePort, py: pyRes.ok, node: nodeRes.ok };
+    });
+    expect(health.pyPort, 'python sidecar port should be exposed via IPC').toBeGreaterThan(0);
+    expect(health.nodePort, 'node sidecar port should be exposed via IPC').toBeGreaterThan(0);
+    expect(health.py, 'python sidecar /health should be 200').toBe(true);
+    expect(health.node, 'node sidecar /health should be 200').toBe(true);
+  });
+
+  test('preload exposes every IPC bridge the renderer relies on', async () => {
+    const win = await app.firstWindow();
+    // Each bridge is keyed on a representative function. If preload silently
+    // fails to load (a regression we have hit historically when the asar
+    // misses a file), `window.<bridge>` is undefined and the renderer
+    // crashes the moment it touches it. Dump everything in one shot so a
+    // missing bridge surfaces in one test failure rather than several.
+    const exposed = await win.evaluate(() => {
+      const w = window as unknown as Record<string, Record<string, unknown>>;
+      return {
+        backend: typeof w.backend?.getPort === 'function',
+        nodeBackend: typeof w.nodeBackend?.getPort === 'function',
+        fsBridge: typeof w.fsBridge?.pathForFile === 'function',
+        shellBridge: typeof w.shellBridge?.openExternal === 'function',
+        dialogBridge: typeof w.dialogBridge?.pickFolder === 'function',
+        credentials: typeof w.credentials?.getRadiopaediaTokens === 'function',
+        radiopaedia: typeof w.radiopaedia?.getValidAccessToken === 'function',
+        uploadBridge: typeof w.uploadBridge?.startImages === 'function',
+      };
+    });
+    expect(exposed).toEqual({
+      backend: true,
+      nodeBackend: true,
+      fsBridge: true,
+      shellBridge: true,
+      dialogBridge: true,
+      credentials: true,
+      radiopaedia: true,
+      uploadBridge: true,
+    });
+  });
+});
+
+test.describe('packaged app — process lifecycle', () => {
+  test.skip(!existsSync(APP_BIN), `packaged binary missing — run \`npm run pack\``);
+
+  // These tests manage their own app lifecycle: one closes early, the other
+  // SIGKILLs the main process, so the shared beforeEach/afterEach pattern
+  // doesn't fit.
+
+  test('clean app close leaves no orphan sidecars', async () => {
+    const app = await electron.launch({ executablePath: APP_BIN });
+    const win = await app.firstWindow();
+    await expect(win.locator('#drop')).toBeVisible();
+    // Wait for the IPC bridge to confirm both sidecars finished startup —
+    // otherwise the pidfile read can race the python-manager / node-manager
+    // writeSidecarPid calls.
+    await win.evaluate(async () => {
+      const w = window as unknown as {
+        backend: { getPort: () => Promise<number | null> };
+        nodeBackend: { getPort: () => Promise<number | null> };
+      };
+      await w.backend.getPort();
+      await w.nodeBackend.getPort();
+    });
+    const pyPid = readPidfile('python-sidecar.pid');
+    const nodePid = readPidfile('node-sidecar.pid');
+    expect(pyPid, 'python pidfile should exist after boot').toBeGreaterThan(0);
+    expect(nodePid, 'node pidfile should exist after boot').toBeGreaterThan(0);
+
+    await app.close();
+
+    // SIGTERM is async; give the OS a moment to reap the children before
+    // asserting. The before-quit handler in main fires first, so 1s is
+    // generous.
+    expect(await waitUntil(() => !isAlive(pyPid), 2000)).toBe(true);
+    expect(await waitUntil(() => !isAlive(nodePid), 2000)).toBe(true);
+  });
+
+  test('next launch reaps sidecars left by SIGKILL', async () => {
+    const a = await electron.launch({ executablePath: APP_BIN });
+    const winA = await a.firstWindow();
+    await expect(winA.locator('#drop')).toBeVisible();
+    await winA.evaluate(async () => {
+      const w = window as unknown as {
+        backend: { getPort: () => Promise<number | null> };
+        nodeBackend: { getPort: () => Promise<number | null> };
+      };
+      await w.backend.getPort();
+      await w.nodeBackend.getPort();
+    });
+    const oldPyPid = readPidfile('python-sidecar.pid');
+    const oldNodePid = readPidfile('node-sidecar.pid');
+    expect(oldPyPid).toBeGreaterThan(0);
+    expect(oldNodePid).toBeGreaterThan(0);
+
+    // SIGKILL the main process so before-quit never fires. Sidecars become
+    // orphans — the exact failure mode the reaper exists to clean up.
+    // Capture the pid BEFORE the kill: Playwright drops its process
+    // reference once the child dies, and `a.process()` then throws.
+    const mainPid = a.process().pid ?? 0;
+    a.process().kill('SIGKILL');
+    expect(await waitUntil(() => !isAlive(mainPid), 2000)).toBe(true);
+    // Sidecars should still be alive at this point — they're orphans, not
+    // killed by the parent's death.
+    expect(isAlive(oldPyPid), 'python orphan should outlive SIGKILL of parent').toBe(true);
+    expect(isAlive(oldNodePid), 'node orphan should outlive SIGKILL of parent').toBe(true);
+
+    // Fresh launch — the reaper in startBackend / startNodeSidecar should
+    // kill the orphans before the new sidecars come up.
+    const b = await electron.launch({ executablePath: APP_BIN });
+    try {
+      const winB = await b.firstWindow();
+      await expect(winB.locator('#drop')).toBeVisible();
+      // Reap is awaited inside startBackend, so by the time the window
+      // renders the orphans are already gone — but allow a small grace
+      // window for SIGKILL escalation in the rare case SIGTERM didn't
+      // work.
+      expect(await waitUntil(() => !isAlive(oldPyPid), 2000)).toBe(true);
+      expect(await waitUntil(() => !isAlive(oldNodePid), 2000)).toBe(true);
+    } finally {
+      await b.close();
+    }
   });
 });
