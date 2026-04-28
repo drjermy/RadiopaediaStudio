@@ -142,15 +142,21 @@ function emitState() {
     : true;
 
   // Predict how many output slices a Save with the current slab settings
-  // would produce — using the source acquisition's known slice count and
-  // spacing, matched to the formula the backend reformat applies
-  // (backend/app/reformat.py: floor((extent - thickness) / spacing) + 1).
+  // would produce. Two cases:
   //
-  // Only meaningful in the source orientation: in source orientation we
-  // know the volume's extent along the scroll axis (sourceSliceCount *
-  // sourceSpacing). In a cross-plane reformat the relevant extent is the
-  // in-slice dimension, which we don't know from the summary — leaving
-  // the field null in that case keeps the renderer from guessing.
+  //   - Native (source orientation + slab equals source thickness/spacing):
+  //     the renderer skips reformat entirely on Save, so the output is the
+  //     source unchanged. Predicted = sourceSliceCount.
+  //
+  //   - Non-native, in source orientation: Save reformats. The backend
+  //     formula (backend/app/reformat.py) is
+  //     `floor((extent - thickness) / spacing) + 1`, where extent is the
+  //     center-to-center span = (sourceSliceCount - 1) * sourceSpacing.
+  //     Mirror that here so the readout matches what Save actually produces.
+  //
+  // Cross-plane reformats need the in-slice extent which we don't know
+  // from the summary — leave the field null in that case so the renderer
+  // hides the row rather than guessing.
   let predictedSliceCount = null;
   let volumeExtentMm = null;
   if (
@@ -160,11 +166,16 @@ function emitState() {
     && sourceSliceCount != null && sourceSpacing != null && sourceSpacing > 0
     && slabSpacing > 0
   ) {
-    volumeExtentMm = sourceSliceCount * sourceSpacing;
-    if (slabThickness < volumeExtentMm) {
-      predictedSliceCount = Math.floor((volumeExtentMm - slabThickness) / slabSpacing) + 1;
+    if (atNative) {
+      predictedSliceCount = sourceSliceCount;
+      volumeExtentMm = (sourceSliceCount - 1) * sourceSpacing + sourceThickness;
     } else {
-      predictedSliceCount = 1; // slab spans the whole volume → MIP-style single slice
+      volumeExtentMm = (sourceSliceCount - 1) * sourceSpacing;
+      if (slabThickness < volumeExtentMm) {
+        predictedSliceCount = Math.floor((volumeExtentMm - slabThickness) / slabSpacing) + 1;
+      } else {
+        predictedSliceCount = 1; // slab spans the whole volume → MIP-style single slice
+      }
     }
   }
 
