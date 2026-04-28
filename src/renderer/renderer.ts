@@ -5,6 +5,7 @@ import type {
   InspectResponse,
   Modality,
   ReformatSpec,
+  Series,
   SeriesInfoRequest,
   SeriesInfoResponse,
   SeriesSummary,
@@ -27,6 +28,7 @@ import {
   buildStudyCreatePayload,
   defaultModalityForSeries,
   deriveDefaultCase,
+  perspectiveConfigFor,
 } from '../shared/api.js';
 import type { ViewerStateDetail } from './globals';
 
@@ -888,177 +890,309 @@ function renderStudySummary(): void {
   }
 }
 
-// Upload-view series list ----------------------------------------------------
-// One row per series. Each row carries a checkbox (default included), a
-// thumbnail, the series description + key metadata, and the per-series Study
-// form (modality / caption / findings). Deselecting a row excludes it from
-// the upload payload and skips its modality requirement during validation.
+// Upload-view: grouped by DICOM study -----------------------------------------
+// One block per DICOM study with a single Modality picker at the top
+// (Radiopaedia's data model: modality lives on the Study). Each child series
+// row carries a checkbox + thumbnail + meta + per-series perspective and
+// specifics inputs (typeahead suggestions and field labels track the parent
+// study's modality — see PERSPECTIVE_MODALITIES).
 function renderUploadSeriesList(): void {
   uploadSeriesListEl.innerHTML = '';
   if (!studyMeta?.studies?.length) return;
 
   for (let si = 0; si < studyMeta.studies.length; si++) {
     const st = studyMeta.studies[si];
-    for (const se of st.series ?? []) {
-      if (!se.folder) continue;
-      const row = document.createElement('div');
-      row.className = 'upload-series-row';
-      row.dataset.folder = se.folder;
-      const selected = isFolderSelected(se.folder);
-      row.classList.toggle('unselected', !selected);
+    const seriesWithFolder = (st.series ?? []).filter((s) => s.folder);
+    if (seriesWithFolder.length === 0) continue;
 
-      const check = document.createElement('input');
-      check.type = 'checkbox';
-      check.className = 'upload-row-check';
-      check.checked = selected;
-      check.addEventListener('change', () => {
-        if (!se.folder) return;
-        if (check.checked) deselectedFolders.delete(se.folder);
-        else deselectedFolders.add(se.folder);
-        row.classList.toggle('unselected', !check.checked);
-        refreshCaseFormUI();
-        persistCaseDraft();
-      });
-      row.appendChild(check);
+    const group = document.createElement('div');
+    group.className = 'upload-study-group';
+    group.dataset.studyKey = studyKeyFor(st) ?? '';
 
-      if (se.thumbnail) {
-        const img = document.createElement('img');
-        img.className = 'upload-row-thumb';
-        img.src = se.thumbnail;
-        img.alt = se.description || 'series preview';
-        row.appendChild(img);
-      } else {
-        const ph = document.createElement('div');
-        ph.className = 'upload-row-thumb-placeholder';
-        row.appendChild(ph);
-      }
+    // Header row: human study label + Modality picker.
+    const header = document.createElement('div');
+    header.className = 'upload-study-header';
 
-      const body = document.createElement('div');
-      body.className = 'upload-row-body';
+    const titleParts: string[] = [];
+    if (st.description) titleParts.push(st.description);
+    if (st.body_part) titleParts.push(st.body_part);
+    if (st.study_date) titleParts.push(st.study_date);
+    const title = document.createElement('div');
+    title.className = 'upload-study-title';
+    title.textContent = titleParts.join(' · ') || `Study ${si + 1}`;
+    header.appendChild(title);
 
-      const desc = document.createElement('div');
-      desc.className = 'upload-row-desc';
-      desc.textContent = se.description || '(no description)';
-      body.appendChild(desc);
-
-      // First meta line: modality, orientation, slice thickness/spacing, count.
-      // Mirrors the format used in the Studio thumbnail meta so the user sees
-      // the same numbers they were just looking at.
-      const tech: string[] = [];
-      if (se.modality) tech.push(se.modality);
-      if (se.orientation) tech.push(se.orientation);
-      if (se.slice_thickness != null) {
-        const th = se.slice_thickness;
-        const sp = se.slice_spacing;
-        if (sp == null) tech.push(`${fmtMm(th)} mm`);
-        else if (sp > th + 0.01) tech.push(`${fmtMm(th)}+${fmtMm(sp - th)} mm`);
-        else tech.push(`${fmtMm(th)}/${fmtMm(sp)} mm`);
-      }
-      tech.push(`${se.slice_count} slice${se.slice_count === 1 ? '' : 's'}`);
-      const meta = document.createElement('div');
-      meta.className = 'upload-row-meta';
-      meta.textContent = `Study ${si + 1} · ${tech.join(' · ')}`;
-      body.appendChild(meta);
-
-      // Second meta line: stack size, per-slice size, transfer syntax.
-      const sizeBits: string[] = [];
-      if (se.total_bytes != null) {
-        sizeBits.push(humanBytes(se.total_bytes));
-        if (se.slice_count > 0) {
-          sizeBits.push(`${humanBytes(se.total_bytes / se.slice_count)}/slice`);
-        }
-      }
-      if (se.transfer_syntax?.name) sizeBits.push(se.transfer_syntax.name);
-      if (sizeBits.length) {
-        const size = document.createElement('div');
-        size.className = 'upload-row-meta';
-        size.textContent = sizeBits.join(' · ');
-        body.appendChild(size);
-      }
-
-      body.appendChild(buildSeriesStudyForm(se));
-      row.appendChild(body);
-      uploadSeriesListEl.appendChild(row);
+    const modLabel = document.createElement('label');
+    modLabel.className = 'upload-study-modality';
+    modLabel.textContent = 'Modality';
+    const modSelect = document.createElement('select');
+    modSelect.className = 'study-modality';
+    {
+      const blank = document.createElement('option');
+      blank.value = '';
+      blank.textContent = '(pick modality)';
+      modSelect.appendChild(blank);
     }
+    for (const m of MODALITY_OPTIONS) {
+      const opt = document.createElement('option');
+      opt.value = m.name;
+      opt.textContent = m.name;
+      modSelect.appendChild(opt);
+    }
+    modSelect.value = getStudyModality(st);
+    modSelect.addEventListener('change', () => {
+      setStudyModality(st, modSelect.value as Modality | '');
+      // Re-render this group so per-series perspective/specifics inputs pick
+      // up the new modality's labels and suggestion lists.
+      renderUploadSeriesList();
+      refreshCaseFormUI();
+      persistCaseDraft();
+    });
+    modLabel.appendChild(modSelect);
+    header.appendChild(modLabel);
+    group.appendChild(header);
+
+    // Series rows.
+    const rows = document.createElement('div');
+    rows.className = 'upload-series-rows';
+    const config = perspectiveConfigFor(getStudyModality(st));
+    for (const se of seriesWithFolder) {
+      rows.appendChild(buildUploadSeriesRow(se, config));
+    }
+    group.appendChild(rows);
+    uploadSeriesListEl.appendChild(group);
   }
 }
 
-// Per-series Study form ------------------------------------------------------
-// Carries the Study fields the user can edit: modality (required) and plane
-// (free text — Radiopaedia's web form is a typeahead with axial / coronal /
-// sagittal suggestions). Writes go straight into studyByFolder and
-// re-validate the form.
-function buildSeriesStudyForm(se: SeriesSummary): HTMLDivElement {
+function buildUploadSeriesRow(
+  se: SeriesSummary,
+  config: ReturnType<typeof perspectiveConfigFor>,
+): HTMLDivElement {
   const folder = se.folder!;
-  // Ensure we have a Study object for this folder so the controls have
-  // somewhere to write. Default-pick modality from the DICOM tag and seed
-  // plane from the DICOM-derived orientation where we can.
-  let current = studyByFolder.get(folder);
-  if (!current) {
-    const guess = defaultModalityForSeries(se.modality);
-    const plane = se.orientation ? titleCase(se.orientation) : undefined;
-    current = { modality: (guess ?? '') as Modality, plane };
-    if (guess || plane) studyByFolder.set(folder, current);
-  } else if (current.plane === undefined && se.orientation) {
-    // Late-bind plane if a prior render created the Study without it.
-    current = { ...current, plane: titleCase(se.orientation) };
-    studyByFolder.set(folder, current);
-  }
+  const row = document.createElement('div');
+  row.className = 'upload-series-row';
+  row.dataset.folder = folder;
+  const selected = isFolderSelected(folder);
+  row.classList.toggle('unselected', !selected);
 
-  const wrap = document.createElement('div');
-  wrap.className = 'series-study';
-  // Block clicks from reaching the <li> (which opens the viewer).
-  wrap.addEventListener('click', (ev) => ev.stopPropagation());
-
-  const modLabel = document.createElement('label');
-  modLabel.textContent = 'Modality';
-  const modSelect = document.createElement('select');
-  modSelect.className = 'series-modality';
-  {
-    const blank = document.createElement('option');
-    blank.value = '';
-    blank.textContent = '(pick modality)';
-    modSelect.appendChild(blank);
-  }
-  for (const m of MODALITY_OPTIONS) {
-    const opt = document.createElement('option');
-    opt.value = m.name;
-    opt.textContent = m.name;
-    modSelect.appendChild(opt);
-  }
-  modSelect.value = current.modality || '';
-  modSelect.addEventListener('change', () => {
-    const existing = studyByFolder.get(folder) ?? { modality: '' as Modality };
-    if (modSelect.value) {
-      studyByFolder.set(folder, { ...existing, modality: modSelect.value as Modality });
-    } else {
-      // Selecting "(pick modality)" invalidates the series — keep other
-      // fields but blank the modality so validation trips.
-      studyByFolder.set(folder, { ...existing, modality: '' as Modality });
-    }
+  const check = document.createElement('input');
+  check.type = 'checkbox';
+  check.className = 'upload-row-check';
+  check.checked = selected;
+  check.addEventListener('change', () => {
+    if (check.checked) deselectedFolders.delete(folder);
+    else deselectedFolders.add(folder);
+    row.classList.toggle('unselected', !check.checked);
     refreshCaseFormUI();
     persistCaseDraft();
   });
-  modLabel.appendChild(modSelect);
+  row.appendChild(check);
 
-  // Plane — free text with typeahead suggestions, matching Radiopaedia's UI.
-  const planeLabel = document.createElement('label');
-  planeLabel.textContent = 'Plane';
-  const planeInput = document.createElement('input');
-  planeInput.type = 'text';
-  planeInput.className = 'series-plane';
-  planeInput.placeholder = 'e.g. Axial';
-  planeInput.setAttribute('list', 'series-plane-options');
-  planeInput.value = current.plane ?? '';
-  planeInput.addEventListener('input', () => {
-    const existing = studyByFolder.get(folder) ?? { modality: '' as Modality };
-    studyByFolder.set(folder, { ...existing, plane: planeInput.value });
-    persistCaseDraft();
+  if (se.thumbnail) {
+    const img = document.createElement('img');
+    img.className = 'upload-row-thumb';
+    img.src = se.thumbnail;
+    img.alt = se.description || 'series preview';
+    row.appendChild(img);
+  } else {
+    const ph = document.createElement('div');
+    ph.className = 'upload-row-thumb-placeholder';
+    row.appendChild(ph);
+  }
+
+  const body = document.createElement('div');
+  body.className = 'upload-row-body';
+
+  const desc = document.createElement('div');
+  desc.className = 'upload-row-desc';
+  desc.textContent = se.description || '(no description)';
+  body.appendChild(desc);
+
+  // Meta line 1: orientation, slice thickness/spacing, count.
+  const tech: string[] = [];
+  if (se.orientation) tech.push(se.orientation);
+  if (se.slice_thickness != null) {
+    const th = se.slice_thickness;
+    const sp = se.slice_spacing;
+    if (sp == null) tech.push(`${fmtMm(th)} mm`);
+    else if (sp > th + 0.01) tech.push(`${fmtMm(th)}+${fmtMm(sp - th)} mm`);
+    else tech.push(`${fmtMm(th)}/${fmtMm(sp)} mm`);
+  }
+  tech.push(`${se.slice_count} slice${se.slice_count === 1 ? '' : 's'}`);
+  if (tech.length) {
+    const meta = document.createElement('div');
+    meta.className = 'upload-row-meta';
+    meta.textContent = tech.join(' · ');
+    body.appendChild(meta);
+  }
+
+  // Meta line 2: stack size, per-slice size, transfer syntax.
+  const sizeBits: string[] = [];
+  if (se.total_bytes != null) {
+    sizeBits.push(humanBytes(se.total_bytes));
+    if (se.slice_count > 0) {
+      sizeBits.push(`${humanBytes(se.total_bytes / se.slice_count)}/slice`);
+    }
+  }
+  if (se.transfer_syntax?.name) sizeBits.push(se.transfer_syntax.name);
+  if (sizeBits.length) {
+    const size = document.createElement('div');
+    size.className = 'upload-row-meta';
+    size.textContent = sizeBits.join(' · ');
+    body.appendChild(size);
+  }
+
+  // Perspective + specifics inputs — labels and suggestions track the
+  // parent study's modality. Both are free-text typeaheads via <datalist>.
+  const fields = document.createElement('div');
+  fields.className = 'series-fields';
+  fields.appendChild(buildTypeaheadInput({
+    label: config.perspective_label,
+    className: 'series-perspective',
+    options: config.perspectives,
+    value: getSeriesField(folder, 'perspective') ?? defaultPerspectiveFor(se),
+    onChange: (v) => {
+      const cur = seriesByFolder.get(folder) ?? {};
+      seriesByFolder.set(folder, { ...cur, perspective: v });
+      persistCaseDraft();
+    },
+  }));
+  if (config.specifics_label) {
+    fields.appendChild(buildTypeaheadInput({
+      label: config.specifics_label,
+      className: 'series-specifics',
+      options: config.specifics,
+      value: getSeriesField(folder, 'specifics') ?? '',
+      onChange: (v) => {
+        const cur = seriesByFolder.get(folder) ?? {};
+        seriesByFolder.set(folder, { ...cur, specifics: v });
+        persistCaseDraft();
+      },
+    }));
+  }
+  body.appendChild(fields);
+
+  row.appendChild(body);
+  return row;
+}
+
+function getSeriesField(folder: string, field: 'perspective' | 'specifics'): string | undefined {
+  return seriesByFolder.get(folder)?.[field];
+}
+
+function defaultPerspectiveFor(se: SeriesSummary): string {
+  return se.orientation ? titleCase(se.orientation) : '';
+}
+
+interface TypeaheadOpts {
+  label: string;
+  className: string;
+  options: readonly string[];
+  value: string;
+  onChange: (v: string) => void;
+}
+// Custom typeahead: <input> + click-to-open suggestion menu. Built instead
+// of a native <datalist> because datalist on Chromium needs two clicks to
+// open, can't be CSS-styled (popup uses OS rendering, often appears bold),
+// and can't be programmatically opened reliably. The input still accepts
+// any text — choosing a suggestion just fills it in.
+function buildTypeaheadInput(opts: TypeaheadOpts): HTMLLabelElement {
+  const label = document.createElement('label');
+  label.className = 'series-field';
+  const span = document.createElement('span');
+  span.className = 'series-field-label';
+  span.textContent = opts.label;
+  label.appendChild(span);
+
+  const wrap = document.createElement('div');
+  wrap.className = 'typeahead-wrap';
+
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = opts.className;
+  input.value = opts.value;
+  input.autocomplete = 'off';
+  input.spellcheck = false;
+  input.addEventListener('input', () => {
+    opts.onChange(input.value);
+    if (opts.options.length) renderMenu(input.value);
   });
-  planeLabel.appendChild(planeInput);
+  wrap.appendChild(input);
 
-  wrap.append(modLabel, planeLabel);
-  return wrap;
+  if (!opts.options.length) {
+    label.appendChild(wrap);
+    return label;
+  }
+
+  const chevron = document.createElement('button');
+  chevron.type = 'button';
+  chevron.className = 'typeahead-chevron';
+  chevron.tabIndex = -1;
+  chevron.setAttribute('aria-label', 'Show suggestions');
+  chevron.textContent = '▾';
+  wrap.appendChild(chevron);
+
+  const menu = document.createElement('div');
+  menu.className = 'typeahead-menu';
+  menu.hidden = true;
+  wrap.appendChild(menu);
+
+  function renderMenu(filter: string): void {
+    menu.innerHTML = '';
+    const q = filter.trim().toLowerCase();
+    const matches = q
+      ? opts.options.filter((o) => o.toLowerCase().includes(q))
+      : opts.options;
+    if (matches.length === 0) {
+      menu.hidden = true;
+      return;
+    }
+    for (const o of matches) {
+      const item = document.createElement('div');
+      item.className = 'typeahead-item';
+      item.textContent = o;
+      item.addEventListener('mousedown', (e) => {
+        // mousedown (not click) so we beat the input's blur which would hide
+        // the menu before the click registers.
+        e.preventDefault();
+        input.value = o;
+        opts.onChange(o);
+        menu.hidden = true;
+        input.focus();
+      });
+      menu.appendChild(item);
+    }
+    menu.hidden = false;
+  }
+
+  function open(): void {
+    renderMenu(input.value);
+  }
+  function close(): void {
+    menu.hidden = true;
+  }
+
+  chevron.addEventListener('mousedown', (e) => {
+    // Toggle on chevron press without stealing focus from the input.
+    e.preventDefault();
+    if (menu.hidden) {
+      input.focus();
+      open();
+    } else {
+      close();
+    }
+  });
+  input.addEventListener('focus', open);
+  input.addEventListener('blur', () => {
+    // Defer so a click on a menu item lands first.
+    setTimeout(close, 100);
+  });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') close();
+  });
+
+  label.appendChild(wrap);
+  return label;
 }
 
 function titleCase(s: string): string {
@@ -1223,11 +1357,11 @@ async function appendNewSeries(
     if (info.total_bytes) st.total_bytes = (st.total_bytes || 0) + info.total_bytes;
     st.series_count = st.series.length;
     st.total_slices = (st.total_slices || 0) + (info.slice_count || 0);
-    // Seed a Study entry for the newly-appended derived series so the user
-    // isn't forced to re-pick modality when it can be guessed from the tag.
-    if (next.folder && !studyByFolder.has(next.folder)) {
-      const guess = defaultModalityForSeries(next.modality);
-      if (guess) studyByFolder.set(next.folder, { modality: guess });
+    // Seed default perspective for the newly-appended derived series so the
+    // user doesn't have to retype Axial/Coronal/etc. Modality is per-study
+    // and doesn't need re-seeding when adding to an existing study.
+    if (next.folder && !seriesByFolder.has(next.folder) && next.orientation) {
+      seriesByFolder.set(next.folder, { perspective: titleCase(next.orientation) });
     }
     renderStudySummary();
     refreshCaseFormUI();
@@ -1261,9 +1395,12 @@ async function deleteSeries(studyIdx: number, seriesIdx: number): Promise<void> 
     st.series_count = st.series.length;
     if (se.total_bytes) st.total_bytes = Math.max(0, (st.total_bytes || 0) - se.total_bytes);
     if (se.slice_count) st.total_slices = Math.max(0, (st.total_slices || 0) - se.slice_count);
-    // Drop the per-series Study state for this folder so it stops gating
-    // the upload button and doesn't round-trip through the draft.
-    if (se.folder) studyByFolder.delete(se.folder);
+    // Drop the per-series state for this folder so it doesn't round-trip
+    // through the draft. The parent DICOM study's modality stays put.
+    if (se.folder) {
+      seriesByFolder.delete(se.folder);
+      deselectedFolders.delete(se.folder);
+    }
     renderStudySummary();
     refreshCaseFormUI();
     persistCaseDraft();
@@ -1381,25 +1518,56 @@ btnRevealMain.addEventListener('click', () => {
 // that survives a /scan re-run.
 
 const CASE_DRAFT_KEY = 'radiopaedia-studio:case-draft';
-const CASE_DRAFT_VERSION = 3; // bumped when selected[] added for upload-series picker.
+const CASE_DRAFT_VERSION = 4; // bumped when modality moved to per-study and series got perspective+specifics.
 
 type CaseFormShape = Omit<Case, 'source_summary' | 'output_root'>;
 
 interface CaseDraft {
   v: number;
   case: CaseFormShape;
-  studies: Array<[string, Study]>; // [folder, Study]
-  deselected?: string[]; // folders the user excluded from the upload
+  studyModalities: Array<[number, Modality]>; // [studyIdx, modality]
+  series: Array<[string, SeriesState]>;       // [folder, { perspective, specifics }]
+  deselected?: string[];                      // folders excluded from upload
 }
 
-// Per-series Study state, keyed by the series folder.
-const studyByFolder = new Map<string, Study>();
+// Per-DICOM-study modality, keyed by the study's index in studyMeta.studies
+// (stable for the life of a single anonymise/scan; resetCaseForm clears it
+// alongside the form when a new run starts).
+const studyModalityByIdx = new Map<number, Modality>();
+
+// Per-series state, keyed by series folder. `perspective` (plane/projection
+// or caption depending on modality) and `specifics` (sequence, contrast,
+// stain, …) are sent via image_preparation, NOT on the studies-create POST.
+type SeriesState = { perspective?: string; specifics?: string };
+const seriesByFolder = new Map<string, SeriesState>();
 
 // Folders the user has chosen NOT to upload. We store deselections rather than
 // selections so newly-discovered series default to included.
 const deselectedFolders = new Set<string>();
 function isFolderSelected(folder: string): boolean {
   return !deselectedFolders.has(folder);
+}
+
+function studyIdxFor(st: StudySummary): number {
+  return studyMeta?.studies?.indexOf(st) ?? -1;
+}
+// Identity helper used in renderUploadSeriesList for data-attributes.
+function studyKeyFor(st: StudySummary): string | null {
+  for (const se of st.series ?? []) {
+    if (se.folder) return se.folder;
+  }
+  return null;
+}
+function getStudyModality(st: StudySummary): Modality | '' {
+  const idx = studyIdxFor(st);
+  if (idx < 0) return '';
+  return studyModalityByIdx.get(idx) ?? '';
+}
+function setStudyModality(st: StudySummary, m: Modality | ''): void {
+  const idx = studyIdxFor(st);
+  if (idx < 0) return;
+  if (m) studyModalityByIdx.set(idx, m as Modality);
+  else studyModalityByIdx.delete(idx);
 }
 
 function emptyCaseForm(): CaseFormShape {
@@ -1453,19 +1621,28 @@ function updateCounter(
   el.classList.toggle('over', len > max);
 }
 
-// Collect every Study we have a form for that corresponds to a series still
-// present in the current summary. Ordered by study-in-summary, then by
-// series-in-study to match how the thumbnails render.
-function collectStudies(): Array<{ folder: string; study: Study }> {
-  const out: Array<{ folder: string; study: Study }> = [];
+// Collect each DICOM study with at least one selected series. Returns one
+// entry per Study (single modality, multiple Series) — matches the wire
+// shape: one POST .../studies + N image_preparation calls per Study.
+function collectStudies(): Array<{ study: Study; series: Series[] }> {
+  const out: Array<{ study: Study; series: Series[] }> = [];
   if (!studyMeta?.studies) return out;
   for (const st of studyMeta.studies) {
+    const selectedSeries: Series[] = [];
     for (const se of st.series ?? []) {
       if (!se.folder) continue;
       if (!isFolderSelected(se.folder)) continue;
-      const s = studyByFolder.get(se.folder);
-      if (s) out.push({ folder: se.folder, study: s });
+      const state = seriesByFolder.get(se.folder) ?? {};
+      selectedSeries.push({
+        folder: se.folder,
+        perspective: state.perspective,
+        specifics: state.specifics,
+      });
     }
+    if (selectedSeries.length === 0) continue;
+    const modality = getStudyModality(st);
+    if (!modality) continue; // unset modality → skip; validation prevents this
+    out.push({ study: { modality }, series: selectedSeries });
   }
   return out;
 }
@@ -1481,22 +1658,20 @@ function validateCaseForm(): { ok: boolean; message: string } {
   caseSystem.classList.toggle('invalid', !Number.isFinite(systemId));
   if (!Number.isFinite(systemId)) return { ok: false, message: 'Pick a system.' };
 
-  // Every SELECTED series must have a modality picked. Deselected series are
-  // excluded from the upload, so we don't validate them.
-  const series = (studyMeta?.studies ?? [])
-    .flatMap((st) => st.series ?? [])
-    .filter((s) => s.folder && isFolderSelected(s.folder));
-  if (series.length === 0) {
-    return { ok: false, message: 'Select at least one series to upload.' };
-  }
-  for (const se of series) {
-    const s = se.folder ? studyByFolder.get(se.folder) : undefined;
-    if (!s?.modality) {
-      return {
-        ok: false,
-        message: `Pick a modality for "${se.description || 'unnamed series'}".`,
-      };
+  // Each DICOM study with at least one selected series must have a modality
+  // picked (modality is per-Study on Radiopaedia, not per-Series).
+  let anySelected = false;
+  for (const st of studyMeta?.studies ?? []) {
+    const hasSelected = (st.series ?? []).some((s) => s.folder && isFolderSelected(s.folder));
+    if (!hasSelected) continue;
+    anySelected = true;
+    if (!getStudyModality(st)) {
+      const desc = st.description || st.body_part || `Study ${(studyMeta!.studies!.indexOf(st)) + 1}`;
+      return { ok: false, message: `Pick a modality for "${desc}".` };
     }
+  }
+  if (!anySelected) {
+    return { ok: false, message: 'Select at least one series to upload.' };
   }
   return { ok: true, message: '' };
 }
@@ -1507,13 +1682,17 @@ function refreshCaseFormUI(): void {
   caseValidation.textContent = v.message;
   caseValidation.classList.toggle('error', !v.ok);
   btnCaseReady.disabled = !v.ok;
-  // Reflect per-series validity on any open select. Selects live inside the
-  // upload-series rows; only flag rows that are actually selected for upload.
-  for (const sel of uploadSeriesListEl.querySelectorAll<HTMLSelectElement>('.series-modality')) {
-    const row = sel.closest<HTMLDivElement>('.upload-series-row');
-    const folder = row?.dataset.folder ?? '';
-    const selected = folder ? isFolderSelected(folder) : true;
-    sel.classList.toggle('invalid', selected && sel.value === '');
+  // Mark study-modality selects as invalid when their group has selected
+  // series but no modality. Per-series perspective/specifics aren't
+  // required, so they don't get an invalid flag.
+  for (const sel of uploadSeriesListEl.querySelectorAll<HTMLSelectElement>('.study-modality')) {
+    const group = sel.closest<HTMLDivElement>('.upload-study-group');
+    let needsModality = false;
+    if (group) {
+      const checks = group.querySelectorAll<HTMLInputElement>('.upload-row-check');
+      for (const c of checks) if (c.checked) { needsModality = true; break; }
+    }
+    sel.classList.toggle('invalid', needsModality && sel.value === '');
   }
 }
 
@@ -1522,7 +1701,8 @@ function persistCaseDraft(): void {
     const payload: CaseDraft = {
       v: CASE_DRAFT_VERSION,
       case: readCaseForm(),
-      studies: Array.from(studyByFolder.entries()),
+      studyModalities: Array.from(studyModalityByIdx.entries()),
+      series: Array.from(seriesByFolder.entries()),
       deselected: Array.from(deselectedFolders),
     };
     sessionStorage.setItem(CASE_DRAFT_KEY, JSON.stringify(payload));
@@ -1552,7 +1732,8 @@ function clearCaseDraft(): void {
 
 function resetCaseForm(): void {
   writeCaseForm(emptyCaseForm());
-  studyByFolder.clear();
+  studyModalityByIdx.clear();
+  seriesByFolder.clear();
   deselectedFolders.clear();
   refreshCaseFormUI();
 }
@@ -1577,37 +1758,49 @@ function hydrateCaseForm(summary: SummaryPayload | null, outputRoot: string | nu
   };
   writeCaseForm(seed);
 
-  // Seed per-series studies for any series we have a draft for, then fill in
-  // the rest by default-picking modality from the series' DICOM modality tag.
-  if (draft?.studies) {
-    for (const [folder, study] of draft.studies) {
-      studyByFolder.set(folder, { ...study });
+  // Restore per-study modality from draft, gated to indices that still
+  // exist in the current summary.
+  studyModalityByIdx.clear();
+  const studyCount = summary.studies?.length ?? 0;
+  if (draft?.studyModalities) {
+    for (const [idx, modality] of draft.studyModalities) {
+      if (idx >= 0 && idx < studyCount) studyModalityByIdx.set(idx, modality);
     }
   }
-  // Restore selection state. Only retain deselections for folders that still
-  // exist in the current summary, so stale entries can't quietly drop a series.
+  // Restore per-series state from draft, gated to folders that still exist.
+  seriesByFolder.clear();
+  const liveFolders = new Set<string>();
+  for (const st of summary.studies ?? []) {
+    for (const se of st.series ?? []) {
+      if (se.folder) liveFolders.add(se.folder);
+    }
+  }
+  if (draft?.series) {
+    for (const [folder, state] of draft.series) {
+      if (liveFolders.has(folder)) seriesByFolder.set(folder, { ...state });
+    }
+  }
+  // Restore deselections (same liveness gate).
   deselectedFolders.clear();
   if (draft?.deselected) {
-    const liveFolders = new Set<string>();
-    for (const st of summary.studies ?? []) {
-      for (const se of st.series ?? []) {
-        if (se.folder) liveFolders.add(se.folder);
-      }
-    }
     for (const folder of draft.deselected) {
       if (liveFolders.has(folder)) deselectedFolders.add(folder);
     }
   }
-  for (const st of summary.studies ?? []) {
+  // Default-fill anything not in the draft. Modality from the DICOM Modality
+  // tag at the study level; perspective from the orientation classifier.
+  for (let si = 0; si < studyCount; si++) {
+    const st = summary.studies![si];
+    if (!studyModalityByIdx.has(si)) {
+      const guess = defaultModalityForSeries(st.modality);
+      if (guess) studyModalityByIdx.set(si, guess);
+    }
     for (const se of st.series ?? []) {
       if (!se.folder) continue;
-      if (studyByFolder.has(se.folder)) continue;
-      const guess = defaultModalityForSeries(se.modality);
-      const study: Study = {
-        modality: (guess ?? '') as Modality, // empty until user picks if no guess
-      };
-      if (guess) studyByFolder.set(se.folder, study);
-      // If guess is null, leave unset so validation fails until user picks.
+      if (seriesByFolder.has(se.folder)) continue;
+      if (se.orientation) {
+        seriesByFolder.set(se.folder, { perspective: titleCase(se.orientation) });
+      }
     }
   }
   refreshCaseFormUI();
@@ -1655,25 +1848,36 @@ btnCaseReady.addEventListener('click', () => {
     output_root: anonOutput,
   };
   // Upload is still a future issue. For now log the request bodies so the
-  // flow is visible end-to-end: one Case create + one Study create per series
-  // (positions start at 2; position 1 is the discussion slot).
+  // flow is visible end-to-end: one Case create + one Study create per
+  // DICOM study (positions start at 2; 1 is the case-discussion slot), and
+  // for each Study its child Series carry perspective/specifics that go to
+  // image_preparation after image upload.
   const casePayload = buildCaseCreatePayload(fullCase);
   const studies = collectStudies();
-  const studyPayloads = studies.map(
-    ({ study }, i) => buildStudyCreatePayload(study, i + 2),
+  const studyBundles = studies.map(({ study, series }, i) => ({
+    study: buildStudyCreatePayload(study, i + 2),
+    series,
+  }));
+  const totalSeries = studies.reduce((n, { series }) => n + series.length, 0);
+  write(
+    `case ready — ${form.title} (${studies.length} stud${studies.length === 1 ? 'y' : 'ies'}, ${totalSeries} series)`,
   );
-  write(`case ready — ${form.title} (${studies.length} stud${studies.length === 1 ? 'y' : 'ies'})`);
   console.info('[renderer] case create payload:', casePayload);
-  console.info('[renderer] study create payloads:', studyPayloads);
+  console.info('[renderer] study + series bundles:', studyBundles);
 });
 
-// Try to restore any previously-saved draft at startup — harmless if no
-// summary is loaded yet, because the fields will be hidden until one is.
+// Try to restore any previously-saved draft at startup. We restore the
+// in-memory maps now so the form's own (Title/System) fields are populated
+// before the user reaches the upload view; per-study modality and per-series
+// state get re-validated against any new summary in hydrateCaseForm.
 const bootDraft = restoreCaseDraft();
 if (bootDraft) {
   writeCaseForm(bootDraft.case);
-  for (const [folder, study] of bootDraft.studies) {
-    studyByFolder.set(folder, { ...study });
+  for (const [idx, modality] of bootDraft.studyModalities) {
+    studyModalityByIdx.set(idx, modality);
+  }
+  for (const [folder, state] of bootDraft.series) {
+    seriesByFolder.set(folder, { ...state });
   }
   if (bootDraft.deselected) {
     for (const f of bootDraft.deselected) deselectedFolders.add(f);

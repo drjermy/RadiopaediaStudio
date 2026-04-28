@@ -357,19 +357,150 @@ export interface Case {
 }
 
 /**
- * Study — one per anonymised series, created under a Case. Maps to the body
- * of POST /api/v1/cases/:id/studies.
+ * Study — one per DICOM study (i.e. one per imaging session). Maps to the
+ * body of POST /api/v1/cases/:id/studies. Each Study contains one or more
+ * Series (see below).
  */
 export interface Study {
   modality: Modality;                           // one of MODALITY_OPTIONS.name.
-  // Plane is shown on the Study form for convenience but lives on the Series
-  // server-side (as `perspective`, set via the image_preparation series
-  // update endpoint). It must NOT be emitted on POST /api/v1/cases/:id/studies
-  // — see the wire-contract block at the top of this file.
-  plane?: string;                               // free text, suggested: Axial / Coronal / Sagittal / Oblique.
   findings?: string;                            // plain text in memory; HTML at wire.
   position?: number;                            // 1 = discussion; first study = 2.
   caption?: string;                             // plain text.
+}
+
+/**
+ * Series — one per anonymised series folder, attached to a Study. The
+ * `perspective` (e.g. plane/projection) and `specifics` (e.g. sequence for
+ * MRI, contrast/window for CT) are sent via image_preparation after image
+ * upload — NOT on POST /api/v1/cases/:id/studies. Both are free-text
+ * typeaheads on the Radiopaedia UI; labels and suggestion lists vary per
+ * Study.modality (see PERSPECTIVE_MODALITIES below).
+ */
+export interface Series {
+  folder: string;                               // anonymised series folder; primary key.
+  perspective?: string;                         // free text — what the UI labels "Plane / projection" (or "Caption" for Annotated/Illustration/Photograph).
+  specifics?: string;                           // free text — modality-specific (Sequence, Contrast / window, Stain, Injection, …).
+}
+
+/**
+ * Per-modality perspective + specifics configuration. Mirrors Radiopaedia's
+ * own `perspective_modalities.json` (used by their image_preparation UI), so
+ * users see the same field labels and typeahead suggestions here as they
+ * would when filling things in on the website.
+ *
+ * `specifics` empty array → don't show that input at all for the modality.
+ * Modalities not listed (or modality unset) fall back to the default below
+ * — perspective labelled "Plane / projection" with no suggestions.
+ */
+export interface PerspectiveModalityConfig {
+  perspective_label: string;
+  perspectives: readonly string[];
+  specifics_label: string;
+  specifics: readonly string[];
+}
+
+export const PERSPECTIVE_MODALITY_DEFAULT: PerspectiveModalityConfig = {
+  perspective_label: 'Plane / projection',
+  perspectives: [],
+  specifics_label: '',
+  specifics: [],
+};
+
+export const PERSPECTIVE_MODALITIES: Readonly<Record<Modality, PerspectiveModalityConfig>> = {
+  'CT': {
+    perspective_label: 'Plane / projection',
+    perspectives: ['Axial', 'Coronal', 'Sagittal', 'Oblique'],
+    specifics_label: 'Contrast / window',
+    specifics: [
+      'non-contrast',
+      'C+ arterial phase',
+      'C+ portal venous phase',
+      'C+ CTPA',
+      'C+ delayed',
+      'renal excretory phase',
+      'renal cortical phase',
+      'renal parenchymal phase',
+      'lung window',
+      'bone window',
+      'liver window',
+    ],
+  },
+  'MRI': {
+    perspective_label: 'Plane / projection',
+    perspectives: ['Axial', 'Coronal', 'Sagittal', 'Oblique'],
+    specifics_label: 'Sequence',
+    specifics: [
+      'T1', 'T1 fat sat', 'T1 C+', 'T1 C+ fat sat', 'T1 in-phase', 'T1 out-of-phase',
+      'PD', 'PD fat sat', 'T2', 'T2 fat sat', 'STIR', 'FLAIR',
+      'Gradient Echo', 'Echo planar',
+      'late phase (~10 mins)', 'late phase (~30 mins)',
+      'SWI', 'DWI', 'ADC',
+      'MRA', 'MRS', 'MRV',
+      'MR Perfusion (CBF)', 'MR Perfusion (CBV)', 'MR Perfusion (Tmax)',
+      'MR Perfusion (MTT)', 'MR Perfusion (TTP)',
+      'renal excretory phase', 'renal cortical phase', 'renal parenchymal phase',
+    ],
+  },
+  'X-ray': {
+    perspective_label: 'Plane / projection',
+    perspectives: ['Frontal', 'Lateral', 'Oblique'],
+    specifics_label: '',
+    specifics: [],
+  },
+  'Ultrasound': {
+    perspective_label: 'Plane / projection',
+    perspectives: ['Transverse', 'Longitudinal', 'Oblique'],
+    specifics_label: '',
+    specifics: [],
+  },
+  'Mammography': {
+    perspective_label: 'Plane / projection',
+    perspectives: ['MLO', 'CC', 'Lateral'],
+    specifics_label: '',
+    specifics: [],
+  },
+  'DSA (angiography)': {
+    perspective_label: 'Plane / projection',
+    perspectives: ['Frontal', 'Lateral', 'Oblique'],
+    specifics_label: 'Injection',
+    specifics: [
+      'Internal carotid artery', 'External carotid artery', 'Common carotid artery',
+      'Aorta', 'Renal artery', 'Celiac axis',
+      'Superior mesenteric artery', 'Inferior mesenteric artery',
+      'Iliac artery', 'Common femoral artery',
+    ],
+  },
+  'Fluoroscopy': PERSPECTIVE_MODALITY_DEFAULT,
+  'Nuclear medicine': PERSPECTIVE_MODALITY_DEFAULT,
+  'Annotated image': {
+    perspective_label: 'Caption',
+    perspectives: [],
+    specifics_label: '',
+    specifics: [],
+  },
+  'Illustration': {
+    perspective_label: 'Caption',
+    perspectives: [],
+    specifics_label: '',
+    specifics: [],
+  },
+  'Pathology': {
+    perspective_label: 'Plane / projection',
+    perspectives: ['40x', '100x', '400x'],
+    specifics_label: 'Stain / preparation',
+    specifics: ['Gross pathology', 'H&E'],
+  },
+  'Photograph': {
+    perspective_label: 'Caption',
+    perspectives: [],
+    specifics_label: '',
+    specifics: [],
+  },
+};
+
+export function perspectiveConfigFor(modality: Modality | ''): PerspectiveModalityConfig {
+  if (!modality) return PERSPECTIVE_MODALITY_DEFAULT;
+  return PERSPECTIVE_MODALITIES[modality] ?? PERSPECTIVE_MODALITY_DEFAULT;
 }
 
 /**

@@ -602,17 +602,8 @@
       gap: 12px;
       margin-bottom: 12px;
     }
-    .upload-header h2 { margin: 0; }
-    .back-btn {
-      background: transparent;
-      border: 1px solid rgba(127, 127, 127, 0.4);
-      border-radius: 5px;
-      padding: 4px 10px;
-      cursor: pointer;
-      font: inherit;
-      color: inherit;
-    }
-    .back-btn:hover { border-color: var(--accent); color: var(--accent); }
+    .upload-header h2 { margin: 0; flex: 1 1 auto; }
+    #btn-upload-back { margin-left: auto; }
     .upload-hint {
       font-size: 12px;
       color: #888;
@@ -629,7 +620,127 @@
     .upload-series-list {
       display: flex;
       flex-direction: column;
-      gap: 10px;
+      gap: 16px;
+    }
+    .upload-study-group {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 10px;
+      border: 1px solid rgba(127, 127, 127, 0.35);
+      border-radius: 8px;
+      background: rgba(127, 127, 127, 0.04);
+    }
+    .upload-study-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .upload-study-title {
+      flex: 1 1 auto;
+      font-size: 13px;
+      font-weight: 600;
+      color: #444;
+      min-width: 0;
+    }
+    .upload-study-modality {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: #555;
+    }
+    .upload-study-modality select {
+      font: inherit;
+      font-size: 13px;
+      padding: 4px 8px;
+      border-radius: 5px;
+      border: 1px solid rgba(127, 127, 127, 0.4);
+      background: transparent;
+      color: inherit;
+    }
+    .upload-study-modality select.invalid {
+      border-color: #d14;
+    }
+    .upload-series-rows {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .series-fields {
+      display: flex;
+      flex-direction: row;
+      gap: 8px;
+      margin-top: 4px;
+    }
+    .series-fields .series-field {
+      flex: 1 1 0;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      font-size: 11px;
+      color: #666;
+    }
+    .series-fields .series-field-label {
+      color: #555;
+    }
+    .series-fields input[type="text"] {
+      font: inherit;
+      font-size: 12px;
+      font-weight: 400;
+      padding: 4px 22px 4px 6px;
+      border-radius: 4px;
+      border: 1px solid rgba(127, 127, 127, 0.4);
+      background: transparent;
+      color: inherit;
+      box-sizing: border-box;
+      width: 100%;
+    }
+    .typeahead-wrap {
+      position: relative;
+      width: 100%;
+    }
+    .typeahead-chevron {
+      position: absolute;
+      right: 2px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 18px;
+      height: 18px;
+      padding: 0;
+      font-size: 10px;
+      line-height: 1;
+      border: none;
+      background: transparent;
+      color: #888;
+      cursor: pointer;
+      border-radius: 3px;
+    }
+    .typeahead-chevron:hover { color: var(--accent); background: rgba(127,127,127,0.1); }
+    .typeahead-menu {
+      position: absolute;
+      top: calc(100% + 2px);
+      left: 0;
+      right: 0;
+      max-height: 220px;
+      overflow-y: auto;
+      background: var(--bg, #fff);
+      border: 1px solid rgba(127, 127, 127, 0.4);
+      border-radius: 4px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+      z-index: 20;
+    }
+    .typeahead-item {
+      padding: 5px 8px;
+      font-size: 12px;
+      font-weight: 400;
+      cursor: pointer;
+      color: inherit;
+    }
+    .typeahead-item:hover {
+      background: rgba(10, 132, 255, 0.12);
     }
     .upload-series-row {
       display: flex;
@@ -756,50 +867,6 @@
     }
     .case-validation.error { color: #d14; }
 
-    /* Per-series Study form — sits inside each thumbnail card, below the
-       series metadata. Two fields (modality, caption) + a rows=2 findings
-       textarea. Kept compact so the thumbnail grid doesn't blow out. */
-    .series-study {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      width: 100%;
-      margin-top: 4px;
-      padding-top: 6px;
-      border-top: 1px dashed rgba(127, 127, 127, 0.25);
-    }
-    .series-study label {
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-      font-size: 11px;
-      color: #666;
-    }
-    .series-study select,
-    .series-study input[type="text"],
-    .series-study textarea {
-      font: inherit;
-      font-size: 12px;
-      padding: 3px 6px;
-      border-radius: 4px;
-      border: 1px solid rgba(127, 127, 127, 0.4);
-      background: transparent;
-      color: inherit;
-      box-sizing: border-box;
-      width: 100%;
-    }
-    .series-study textarea {
-      resize: vertical;
-      min-height: 32px;
-      font-family: inherit;
-    }
-    .series-study select.invalid {
-      border-color: #d14;
-    }
-    .series-study .series-study-hint {
-      font-size: 10px;
-      color: #999;
-    }
     /* Tri-state sex radio — three pills in a row. */
     .case-radio-group {
       display: flex;
@@ -916,8 +983,8 @@
 
     <div id="panel-upload" class="panel">
       <div class="upload-header">
-        <button id="btn-upload-back" class="back-btn" type="button">← Back</button>
         <h2>Add to Radiopaedia</h2>
+        <button id="btn-upload-back" type="button">← Back</button>
       </div>
 
       <form id="case-form" class="case-form" novalidate>
@@ -958,13 +1025,6 @@
       </form>
     </div>
   </div>
-
-  <datalist id="series-plane-options">
-    <option value="Axial"></option>
-    <option value="Coronal"></option>
-    <option value="Sagittal"></option>
-    <option value="Oblique"></option>
-  </datalist>
 
   <div id="log"></div>
 
