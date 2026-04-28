@@ -2042,6 +2042,11 @@ function renderInitialSteps(studyCount: number, _totalSeries: number): void {
     label: 'Finalise (PUT /cases/:id/mark_upload_finished)',
     status: 'pending',
   });
+  list.push({
+    id: 'verify',
+    label: 'Verify processing on Radiopaedia',
+    status: 'pending',
+  });
   steps = list;
   paintSteps();
 }
@@ -2339,11 +2344,13 @@ async function runImageUploadViaBridge(
     if (result.status === 'aborted') {
       setStep('images', 'error', 'aborted by user');
       setStep('finalize', 'pending', 'skipped — upload aborted');
+      setStep('verify', 'pending', 'skipped — upload aborted');
       finishWithError('images', 'Upload aborted. The case is left as a draft on Radiopaedia.');
       return false;
     }
     setStep('images', 'error', result.message ?? 'unknown error');
     setStep('finalize', 'pending', 'skipped — image upload failed');
+    setStep('verify', 'pending', 'skipped — image upload failed');
     finishWithError('images', result.message ?? 'image upload failed');
     return false;
   } finally {
@@ -2355,6 +2362,13 @@ async function runImageUploadViaBridge(
 // Mirrors the UploadEventPayload union in globals.d.ts. Defined locally
 // because globals.d.ts is a module file (it has top-level exports), so the
 // types within it aren't visible from renderer.ts via the global scope.
+type _ProcessingStatus =
+  | 'pending-upload'
+  | 'pending-dicom-processing'
+  | 'completed-dicom-processing'
+  | 'ready'
+  | 'failed';
+
 type _UploadEventPayload =
   | { type: 'budget'; totalBytes: number; totalFiles: number }
   | { type: 'bytes-progress'; doneBytes: number; totalBytes: number }
@@ -2365,8 +2379,19 @@ type _UploadEventPayload =
   | { type: 'finalize-start' }
   | { type: 'finalize-done' }
   | { type: 'finalize-error'; message: string }
+  | { type: 'verify-start'; totalSeries: number }
+  | { type: 'verify-progress'; studyIdx: number; seriesIdx: number; status: _ProcessingStatus }
+  | { type: 'verify-done'; readyCount: number; failedCount: number; pendingCount: number }
   | { type: 'all-done'; caseId: number }
   | { type: 'aborted' };
+
+// Per-series processing state, populated as verify-progress events
+// arrive. Read by finishWithSuccess when rendering the result panel
+// so the user sees a live checklist of which series settled where.
+const seriesProcessingState = new Map<string, _ProcessingStatus>();
+function processingKey(studyIdx: number, seriesIdx: number): string {
+  return `${studyIdx}.${seriesIdx}`;
+}
 
 function phaseLabel(phase: 'stage' | 'hash' | 'presign' | 'upload' | 'prepare'): string {
   switch (phase) {
@@ -2445,6 +2470,46 @@ function handleUploadEvent(e: _UploadEventPayload): void {
     case 'finalize-error':
       setStep('finalize', 'error', e.message);
       write(`upload: finalise failed: ${e.message}`);
+      break;
+    case 'verify-start':
+      seriesProcessingState.clear();
+      setStep('verify', 'running', `0/${e.totalSeries} ready`);
+      write(`upload: verifying processing for ${e.totalSeries} series`);
+      break;
+    case 'verify-progress':
+      seriesProcessingState.set(processingKey(e.studyIdx, e.seriesIdx), e.status);
+      // Re-derive the step's detail line from the full state map so the
+      // running totals stay accurate as each series settles.
+      {
+        let ready = 0, failed = 0, processing = 0;
+        for (const s of seriesProcessingState.values()) {
+          if (s === 'ready' || s === 'completed-dicom-processing') ready++;
+          else if (s === 'failed') failed++;
+          else processing++;
+        }
+        const total = ready + failed + processing;
+        const bits: string[] = [`${ready}/${total} ready`];
+        if (failed > 0) bits.push(`${failed} failed`);
+        if (processing > 0) bits.push(`${processing} processing`);
+        setStep('verify', 'running', bits.join(', '));
+      }
+      break;
+    case 'verify-done':
+      if (e.failedCount === 0 && e.pendingCount === 0) {
+        setStep('verify', 'done', `${e.readyCount} series ready`);
+      } else if (e.pendingCount > 0) {
+        // Some series still processing when we hit the timeout — not an
+        // error, just slow. The case URL works; pages will populate when
+        // the server finishes.
+        setStep('verify', 'done',
+          `${e.readyCount} ready, ${e.pendingCount} still processing (timed out — refresh on Radiopaedia)`);
+      } else {
+        setStep('verify', 'error',
+          `${e.readyCount} ready, ${e.failedCount} failed`);
+      }
+      write(
+        `upload: verify done — ${e.readyCount} ready, ${e.failedCount} failed, ${e.pendingCount} still processing`,
+      );
       break;
     case 'all-done':
     case 'aborted':
@@ -2807,20 +2872,53 @@ function finishWithSuccess(
   anon.style.opacity = '0.75';
   anon.style.fontSize = '12px';
   anon.textContent = '✓ All series anonymised by dicomanon before upload.';
-  // Heads-up: Radiopaedia runs a DICOM-conversion + thumbnail job after
-  // mark_upload_finished. The case page exists immediately but the
-  // studies / series tiles won't show up until that job completes —
-  // typically a few seconds for a small study, longer for a big one.
-  // Without this note the user sees an "empty" case and assumes the
-  // upload silently failed.
-  const heads = document.createElement('div');
-  heads.style.marginTop = '8px';
-  heads.style.fontSize = '12px';
-  heads.style.opacity = '0.75';
-  heads.textContent =
-    'Radiopaedia processes the uploaded DICOMs in the background. ' +
-    'The case page may appear empty for the first few seconds — refresh ' +
-    'the page once or twice to see the series as they finish converting.';
+  // Per-series processing summary, populated from verify-progress
+  // events. Replaces the old "refresh the page once or twice" hint —
+  // we polled and know the actual state now.
+  const processing = document.createElement('div');
+  processing.style.marginTop = '10px';
+  processing.style.fontSize = '12px';
+  if (seriesProcessingState.size > 0) {
+    let ready = 0, failed = 0, pending = 0;
+    for (const s of seriesProcessingState.values()) {
+      if (s === 'ready' || s === 'completed-dicom-processing') ready++;
+      else if (s === 'failed') failed++;
+      else pending++;
+    }
+    const total = seriesProcessingState.size;
+    const summary = document.createElement('div');
+    summary.style.fontWeight = '600';
+    summary.textContent = `Processing on Radiopaedia: ${ready}/${total} ready`
+      + (failed > 0 ? `, ${failed} failed` : '')
+      + (pending > 0 ? `, ${pending} still processing` : '');
+    processing.appendChild(summary);
+    if (failed > 0) {
+      const note = document.createElement('div');
+      note.style.marginTop = '4px';
+      note.style.opacity = '0.75';
+      note.textContent =
+        'Radiopaedia doesn\'t expose failure reasons via the API — open the ' +
+        'case to see the server\'s error message.';
+      processing.appendChild(note);
+    }
+    if (pending > 0) {
+      const note = document.createElement('div');
+      note.style.marginTop = '4px';
+      note.style.opacity = '0.75';
+      note.textContent =
+        'Some series were still processing when the verify timeout hit. ' +
+        'Refresh the case page once or twice for them to populate.';
+      processing.appendChild(note);
+    }
+  } else {
+    // Verify wasn't run (no series, or polling didn't fire) — fall back
+    // to the heads-up that the page might be empty briefly.
+    processing.style.opacity = '0.75';
+    processing.textContent =
+      'Radiopaedia processes the uploaded DICOMs in the background. The case '
+      + 'page may appear empty for the first few seconds — refresh once or '
+      + 'twice to see the series as they finish converting.';
+  }
   const link = document.createElement('div');
   link.style.marginTop = '8px';
   const a = document.createElement('a');
@@ -2837,7 +2935,7 @@ function finishWithSuccess(
   uploadPreviewResult.appendChild(heading);
   uploadPreviewResult.appendChild(sub);
   uploadPreviewResult.appendChild(anon);
-  uploadPreviewResult.appendChild(heads);
+  uploadPreviewResult.appendChild(processing);
   uploadPreviewResult.appendChild(link);
   write(`case created on Radiopaedia: ${caseUrl} (${studyIds.length} studies)`);
 }

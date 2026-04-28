@@ -41,6 +41,27 @@ export interface ImageUploadSpec {
 
 export type UploadPhase = 'stage' | 'hash' | 'presign' | 'upload' | 'prepare';
 
+/**
+ * Per-series processing status returned by Radiopaedia's
+ * `/image_preparation/.../upload/:upload_id` polling endpoint.
+ *
+ * `pending-upload` → /image_preparation accepted the request; the
+ * background job hasn't finished creating the Series record yet.
+ * `pending-dicom-processing` → series exists, DICOM-to-PNG conversion
+ * still running.
+ * `completed-dicom-processing` → conversion done, no trim/crop pending.
+ * `ready` → fully ready to display.
+ * `failed` → terminal — the job finished without creating a series. We
+ * synthesise this client-side; the API doesn't have a literal "failed"
+ * string and (per the handoff doc, item #8) doesn't surface the reason.
+ */
+export type ProcessingStatus =
+  | 'pending-upload'
+  | 'pending-dicom-processing'
+  | 'completed-dicom-processing'
+  | 'ready'
+  | 'failed';
+
 export type UploadEvent =
   | { type: 'budget'; totalBytes: number; totalFiles: number }
   | { type: 'bytes-progress'; doneBytes: number; totalBytes: number }
@@ -51,6 +72,11 @@ export type UploadEvent =
   | { type: 'finalize-start' }
   | { type: 'finalize-done' }
   | { type: 'finalize-error'; message: string }
+  // Polling phase after mark_upload_finished — Radiopaedia processes the
+  // uploaded DICOMs asynchronously, so we follow up with status checks.
+  | { type: 'verify-start'; totalSeries: number }
+  | { type: 'verify-progress'; studyIdx: number; seriesIdx: number; status: ProcessingStatus }
+  | { type: 'verify-done'; readyCount: number; failedCount: number; pendingCount: number }
   | { type: 'all-done'; caseId: number }
   | { type: 'aborted' };
 
@@ -221,6 +247,12 @@ async function runUploadAfterStaging(
   signal: AbortSignal,
 ): Promise<void> {
 
+  // Captures the (studyIdx, seriesIdx, studyId, jobId) for each
+  // /image_preparation/.../series response. We use these after
+  // mark_upload_finished to poll the upload-status endpoint and surface
+  // the per-series processing state to the user.
+  const jobsToPoll: JobToPoll[] = [];
+
   // Discovery pass: list each series' files and stat their sizes so we
   // can publish a byte budget up front. The renderer uses this to drive
   // a real progress bar that accounts for the actual upload size, not
@@ -273,7 +305,7 @@ async function runUploadAfterStaging(
       const series = studyEntry.series[xi];
       const discovery = discovered[si][xi];
       try {
-        await uploadSeries({
+        const { jobId } = await uploadSeries({
           apiBase,
           caseId: spec.caseId,
           studyId: studyEntry.studyId,
@@ -289,6 +321,14 @@ async function runUploadAfterStaging(
         });
         if (signal.aborted) { emit({ type: 'aborted' }); return; }
         emit({ type: 'series-done', studyIdx: si, seriesIdx: xi });
+        if (jobId) {
+          jobsToPoll.push({
+            studyIdx: si,
+            seriesIdx: xi,
+            studyId: studyEntry.studyId,
+            jobId,
+          });
+        }
       } catch (e) {
         if (signal.aborted) { emit({ type: 'aborted' }); return; }
         const msg = describeError(e);
@@ -310,12 +350,126 @@ async function runUploadAfterStaging(
       signal,
     });
     emit({ type: 'finalize-done' });
-    emit({ type: 'all-done', caseId: spec.caseId });
   } catch (e) {
     if (signal.aborted) { emit({ type: 'aborted' }); return; }
     emit({ type: 'finalize-error', message: describeError(e) });
     throw e;
   }
+
+  // Verify phase: poll Radiopaedia's per-job status endpoints until each
+  // series settles (ready or failed) or the global timeout fires.
+  if (jobsToPoll.length > 0) {
+    emit({ type: 'verify-start', totalSeries: jobsToPoll.length });
+    const summary = await pollProcessingState(apiBase, jobsToPoll, token, emit, signal);
+    if (signal.aborted) { emit({ type: 'aborted' }); return; }
+    emit({ type: 'verify-done', ...summary });
+  }
+  emit({ type: 'all-done', caseId: spec.caseId });
+}
+
+interface JobToPoll {
+  studyIdx: number;
+  seriesIdx: number;
+  studyId: number;
+  jobId: string;
+}
+
+async function pollProcessingState(
+  apiBase: string,
+  jobs: JobToPoll[],
+  token: () => string,
+  emit: EmitFn,
+  signal: AbortSignal,
+): Promise<{ readyCount: number; failedCount: number; pendingCount: number }> {
+  // Per-job state — start at "pending-upload" (job is queued, no series
+  // record yet) and walk through the status field until a terminal value.
+  const states = new Map<string, ProcessingStatus>();
+  for (const j of jobs) states.set(j.jobId, 'pending-upload');
+
+  // Backoff: 2s → 4s → 8s → 16s, capped at 30s. Total timeout ~5 min,
+  // generous for typical cases — large CTs can take longer; we'll log a
+  // verify-done with pendingCount > 0 if we hit it.
+  const overallDeadline = Date.now() + 5 * 60 * 1000;
+  let delayMs = 2_000;
+
+  // Each loop checks every still-pending job, then sleeps. Done when
+  // every job is terminal or we hit the deadline.
+  while (true) {
+    if (signal.aborted) break;
+    const pending = jobs.filter((j) => !isTerminal(states.get(j.jobId)!));
+    if (pending.length === 0) break;
+    if (Date.now() >= overallDeadline) break;
+
+    for (const j of pending) {
+      if (signal.aborted) break;
+      try {
+        const next = await fetchJobStatus(apiBase, j, token());
+        if (next !== states.get(j.jobId)) {
+          states.set(j.jobId, next);
+          emit({ type: 'verify-progress', studyIdx: j.studyIdx, seriesIdx: j.seriesIdx, status: next });
+        }
+      } catch (e) {
+        // A single poll error doesn't end the world — try again next round.
+        // If the job vanished entirely (server pruned), we'll keep polling
+        // until the overall deadline and report it as still-pending.
+      }
+    }
+
+    if (signal.aborted) break;
+    if (jobs.every((j) => isTerminal(states.get(j.jobId)!))) break;
+    if (Date.now() >= overallDeadline) break;
+    await sleep(delayMs, signal);
+    delayMs = Math.min(delayMs * 2, 30_000);
+  }
+
+  let ready = 0, failed = 0, pending = 0;
+  for (const j of jobs) {
+    const s = states.get(j.jobId);
+    if (s === 'ready' || s === 'completed-dicom-processing') ready++;
+    else if (s === 'failed') failed++;
+    else pending++;
+  }
+  return { readyCount: ready, failedCount: failed, pendingCount: pending };
+}
+
+function isTerminal(s: ProcessingStatus): boolean {
+  return s === 'ready' || s === 'completed-dicom-processing' || s === 'failed';
+}
+
+async function fetchJobStatus(
+  apiBase: string,
+  j: JobToPoll,
+  bearer: string,
+): Promise<ProcessingStatus> {
+  // GET /image_preparation/:case_id/studies/:study_id/upload/:upload_id
+  // returns 202 while the job is running, 200 once finished. The 200 has
+  // study + series fields merged; absence of `seriesId` (camelCase, per
+  // SeriesImagePreparationSerializer) means the job finished without
+  // creating a series — i.e. the upload failed (no error surfaced; see
+  // handoff doc item #8).
+  const url = `${apiBase}/image_preparation/_/studies/${j.studyId}/upload/${encodeURIComponent(j.jobId)}`;
+  // The case_id segment is unused by check_upload_status; the route is
+  // matched by job_id alone. Sending '_' as a placeholder keeps the URL
+  // valid without us having to thread the case id deeper into the poll
+  // call site.
+  const res = await fetch(url, {
+    headers: { 'Authorization': `Bearer ${bearer}`, 'Accept': 'application/json' },
+  });
+  if (res.status === 202) return 'pending-upload';
+  if (!res.ok) throw new HttpError(`GET upload status`, res.status, await res.text().catch(() => ''));
+  const body = (await res.json()) as Record<string, unknown>;
+  // Series exists → use its status field (ready / completed-dicom-processing /
+  // pending-dicom-processing / pending-trim / pending-crop). Trim/crop are
+  // unrelated to a fresh upload, so they collapse to pending-dicom for our
+  // purposes.
+  if (body.seriesId != null) {
+    const status = String(body.status ?? '');
+    if (status === 'ready') return 'ready';
+    if (status === 'completed-dicom-processing') return 'completed-dicom-processing';
+    return 'pending-dicom-processing';
+  }
+  // No seriesId after the job finished → failed.
+  return 'failed';
 }
 
 function requireToken(t: string | null): string {
@@ -346,7 +500,7 @@ interface UploadSeriesArgs {
   signal: AbortSignal;
 }
 
-async function uploadSeries(args: UploadSeriesArgs): Promise<void> {
+async function uploadSeries(args: UploadSeriesArgs): Promise<{ jobId: string | null }> {
   const { apiBase, caseId, studyId, studyIdx, seriesIdx, series, discovery, bumpBytes, emit, signal } = args;
 
   const files = discovery.files;
@@ -363,7 +517,7 @@ async function uploadSeries(args: UploadSeriesArgs): Promise<void> {
   const buffers: Buffer[] = [];
   emit({ type: 'series-progress', studyIdx, seriesIdx, phase: 'hash', done: 0, total: files.length });
   for (let i = 0; i < files.length; i++) {
-    if (signal.aborted) return;
+    if (signal.aborted) return { jobId: null };
     const buf = await readFile(files[i].path);
     buffers.push(buf);
     hashes.push(createHash('sha256').update(buf).digest('hex'));
@@ -423,7 +577,7 @@ async function uploadSeries(args: UploadSeriesArgs): Promise<void> {
   const seriesBody: Record<string, unknown> = { root_index: 0 };
   if (series.perspective?.trim()) seriesBody.perspective = series.perspective.trim();
   if (series.specifics?.trim()) seriesBody.specifics = series.specifics.trim();
-  await apiFetch(apiBase, `/image_preparation/${caseId}/studies/${studyId}/series`, {
+  const prepResponse = await apiFetch(apiBase, `/image_preparation/${caseId}/studies/${studyId}/series`, {
     method: 'POST',
     token: args.token(),
     body: {
@@ -434,6 +588,12 @@ async function uploadSeries(args: UploadSeriesArgs): Promise<void> {
     signal,
   });
   emit({ type: 'series-progress', studyIdx, seriesIdx, phase: 'prepare', done: 1, total: 1 });
+  // The /image_preparation/.../series response includes a `job_id` we
+  // use later to poll processing status. Type it loosely (the exact
+  // shape isn't documented; check_upload_status reads it back as a
+  // string).
+  const jobId = prepResponse.job_id as string | undefined;
+  return { jobId: jobId ?? null };
 }
 
 function extractUploadsArray(json: unknown): PresignEntry[] {

@@ -65,6 +65,12 @@ interface UploadStartSpec {
 type UploadStartResult = { status: 'ok' | 'error' | 'aborted'; message?: string };
 
 type UploadPhase = 'stage' | 'hash' | 'presign' | 'upload' | 'prepare';
+type ProcessingStatus =
+  | 'pending-upload'
+  | 'pending-dicom-processing'
+  | 'completed-dicom-processing'
+  | 'ready'
+  | 'failed';
 type UploadEventPayload =
   | { type: 'budget'; totalBytes: number; totalFiles: number }
   | { type: 'bytes-progress'; doneBytes: number; totalBytes: number }
@@ -75,6 +81,9 @@ type UploadEventPayload =
   | { type: 'finalize-start' }
   | { type: 'finalize-done' }
   | { type: 'finalize-error'; message: string }
+  | { type: 'verify-start'; totalSeries: number }
+  | { type: 'verify-progress'; studyIdx: number; seriesIdx: number; status: ProcessingStatus }
+  | { type: 'verify-done'; readyCount: number; failedCount: number; pendingCount: number }
   | { type: 'all-done'; caseId: number }
   | { type: 'aborted' };
 
