@@ -1970,6 +1970,7 @@ function showUploadPreview(p: PreparedUpload): void {
   uploadProgressText.textContent = '';
 
   uploadPreview.hidden = false;
+  syncBodyScrollLock();
 }
 
 // Step model — drives the icon column on the left of the modal's step list.
@@ -2035,6 +2036,16 @@ function setStep(id: string, status: StepStatus, detail?: string): void {
 function hideUploadPreview(): void {
   if (uploadInFlight) return; // don't let Esc/backdrop kill an in-flight call.
   uploadPreview.hidden = true;
+  syncBodyScrollLock();
+}
+
+// Body-scroll lock for modal overlays. Without this, scrolling inside the
+// modal falls through to the page underneath once the modal content fits
+// in the viewport — a constant minor irritation. We track which overlays
+// are open via a small ref and lock the body whenever any are visible.
+function syncBodyScrollLock(): void {
+  const anyOpen = !uploadPreview.hidden || !authModal.hidden;
+  document.body.style.overflow = anyOpen ? 'hidden' : '';
 }
 
 // "12.4 MB / 248.7 MB · 5%" — the progress bar's status line. Each byte
@@ -2139,11 +2150,20 @@ async function uploadCaseAndStudies(p: PreparedUpload): Promise<void> {
     const quotas = (me.quotas ?? {}) as Record<string, unknown>;
     const allowed = quotas.allowed_draft_cases as number | null | undefined;
     const used = quotas.draft_case_count as number | undefined;
+    const login = (me.login as string | undefined)?.trim() || null;
     if (allowed != null && used != null && used >= allowed) {
       setStep('auth', 'error', `over draft quota (${used}/${allowed})`);
+      // Surface a deep link to the user's own drafts list so they can
+      // delete an old draft and retry. The path is the same shape on
+      // staging and prod — only the host changes — so deriving from
+      // apiBase is enough.
+      const draftsUrl = login
+        ? `${apiBase}/users/${encodeURIComponent(login)}/cases?visibility=draft`
+        : null;
       return finishWithError(
         'auth',
-        `Over draft quota (${used}/${allowed}). Increase your supporter level or delete a draft case before retrying.`,
+        `Over draft quota (${used}/${allowed}). Delete a draft case or increase your supporter level before retrying.`,
+        draftsUrl ? { label: 'Open my draft cases →', url: draftsUrl } : undefined,
       );
     }
     quotaOk = true;
@@ -2374,10 +2394,12 @@ function paintAuthModal(): void {
 function openAuthModal(): void {
   paintAuthModal();
   authModal.hidden = false;
+  syncBodyScrollLock();
   if (!isAuthed) authCodeInput.focus();
 }
 function closeAuthModal(): void {
   authModal.hidden = true;
+  syncBodyScrollLock();
 }
 
 btnAuth.addEventListener('click', openAuthModal);
@@ -2467,7 +2489,11 @@ btnAuthSignout.addEventListener('click', async () => {
   }
 });
 
-function finishWithError(_stepId: string, message: string): void {
+function finishWithError(
+  _stepId: string,
+  message: string,
+  helpLink?: { label: string; url: string },
+): void {
   uploadInFlight = false;
   btnPreviewSubmit.disabled = false;
   btnPreviewSubmit.textContent = 'Try again';
@@ -2481,6 +2507,21 @@ function finishWithError(_stepId: string, message: string): void {
   banner.className = 'modal-error';
   banner.textContent = message;
   uploadPreviewResult.appendChild(banner);
+
+  if (helpLink) {
+    const linkRow = document.createElement('div');
+    linkRow.style.marginTop = '8px';
+    const a = document.createElement('a');
+    a.href = helpLink.url;
+    a.textContent = helpLink.label;
+    a.style.color = 'var(--accent)';
+    a.addEventListener('click', (ev) => {
+      ev.preventDefault();
+      void window.shellBridge.openExternal(helpLink.url);
+    });
+    linkRow.appendChild(a);
+    uploadPreviewResult.appendChild(linkRow);
+  }
 
   // If a partial draft was created on Radiopaedia, surface a link so the
   // user can inspect or delete it. "Try again" creates a fresh draft —
