@@ -429,7 +429,21 @@ def scan_folder(input_dir: Path) -> dict:
             if paths:
                 try:
                     middle = sorted(paths)[len(paths) // 2]
-                    stats['thumbnail'] = make_thumbnail(pydicom.dcmread(middle))
+                    mid_ds = pydicom.dcmread(middle)
+                    stats['thumbnail'] = make_thumbnail(mid_ds)
+                    # Replace the first-slice W/L captured during the walk with
+                    # the middle slice's. Some scanners emit per-slice
+                    # WindowCenter / WindowWidth that vary across the stack —
+                    # MR STIR end-slices are mostly air and get an auto-narrow
+                    # tissue window (e.g. 27/47) that saturates the rest of the
+                    # series when the viewer locks to it. Middle slice is a
+                    # better default for the volume.
+                    mid_wc = _first_num(mid_ds.get('WindowCenter', None))
+                    mid_ww = _first_num(mid_ds.get('WindowWidth',  None))
+                    if mid_wc is not None:
+                        stats['window_center'] = mid_wc
+                    if mid_ww is not None:
+                        stats['window_width'] = mid_ww
                 except Exception:
                     stats['thumbnail'] = None
             out_series.append(stats)
