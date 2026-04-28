@@ -31,6 +31,8 @@ contextBridge.exposeInMainWorld('fsBridge', {
 
 contextBridge.exposeInMainWorld('shellBridge', {
   reveal: (p: string): Promise<void> => ipcRenderer.invoke('shell:reveal', p),
+  openExternal: (url: string): Promise<void> =>
+    ipcRenderer.invoke('shell:openExternal', url),
 });
 
 contextBridge.exposeInMainWorld('dialogBridge', {
@@ -57,6 +59,8 @@ contextBridge.exposeInMainWorld('credentials', {
 contextBridge.exposeInMainWorld('radiopaedia', {
   getValidAccessToken: (): Promise<string | null> =>
     ipcRenderer.invoke('radiopaedia:get-valid-access-token'),
+  getApiBase: (): Promise<string> =>
+    ipcRenderer.invoke('radiopaedia:get-api-base'),
   openAuthorizationPage: (): Promise<'ok' | 'error'> =>
     ipcRenderer.invoke('radiopaedia:open-authorization-page'),
   exchangeAuthorizationCode: (code: string): Promise<AuthExchangeResult> =>

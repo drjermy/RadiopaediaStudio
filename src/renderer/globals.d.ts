@@ -16,6 +16,7 @@ interface FsBridge {
 
 interface ShellBridge {
   reveal(p: string): Promise<void>;
+  openExternal(url: string): Promise<void>;
 }
 
 interface DialogBridge {
@@ -47,6 +48,7 @@ type RadiopaediaAuthExchangeResult = 'ok' | 'error';
 
 interface RadiopaediaBridge {
   getValidAccessToken(): Promise<string | null>;
+  getApiBase(): Promise<string>;
   openAuthorizationPage(): Promise<'ok' | 'error'>;
   exchangeAuthorizationCode(code: string): Promise<RadiopaediaAuthExchangeResult>;
 }

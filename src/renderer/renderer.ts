@@ -96,11 +96,14 @@ const uploadSeriesListEl = req<HTMLDivElement>('upload-series-list');
 
 // Upload-preview modal elements.
 const uploadPreview = req<HTMLDivElement>('upload-preview');
+const uploadPreviewBlurb = req<HTMLParagraphElement>('upload-preview-blurb');
 const uploadPreviewSummary = req<HTMLDivElement>('upload-preview-summary');
-const uploadPreviewEndpoints = req<HTMLOListElement>('upload-preview-endpoints');
+const uploadPreviewSteps = req<HTMLOListElement>('upload-preview-steps');
 const uploadPreviewPayloads = req<HTMLDivElement>('upload-preview-payloads');
+const uploadPreviewResult = req<HTMLDivElement>('upload-preview-result');
 const btnPreviewClose = req<HTMLButtonElement>('btn-preview-close');
-const btnPreviewOk = req<HTMLButtonElement>('btn-preview-ok');
+const btnPreviewCancel = req<HTMLButtonElement>('btn-preview-cancel');
+const btnPreviewSubmit = req<HTMLButtonElement>('btn-preview-submit');
 const caseTitle = req<HTMLInputElement>('case-title');
 const caseTitleCounter = req<HTMLSpanElement>('case-title-counter');
 const caseSystem = req<HTMLSelectElement>('case-system');
@@ -1876,27 +1879,41 @@ btnCaseReady.addEventListener('click', () => {
   }));
   const totalSeries = studies.reduce((n, { series }) => n + series.length, 0);
   write(
-    `upload preview shown — ${form.title} (${studies.length} stud${studies.length === 1 ? 'y' : 'ies'}, ${totalSeries} series). No upload performed.`,
+    `upload preview ready — ${form.title} (${studies.length} stud${studies.length === 1 ? 'y' : 'ies'}, ${totalSeries} series).`,
   );
-  showUploadPreview(form.title, casePayload, studyBundles, totalSeries);
+  showUploadPreview({ title: form.title, casePayload, studyBundles, totalSeries });
 });
 
-// Render and show the upload-preview modal. Spells out what the live upload
-// would do — case create + per-study create + per-series image_preparation —
-// since the actual API integration isn't wired up yet and the user otherwise
-// gets no feedback when they hit the button.
-function showUploadPreview(
-  title: string,
-  casePayload: Record<string, unknown>,
-  studyBundles: Array<{ study: Record<string, unknown>; series: Series[] }>,
-  totalSeries: number,
-): void {
+// Modal state. We keep a snapshot of the most recent submit attempt so the
+// Submit handler can read it without re-collecting the form (which the user
+// might have closed/reopened the modal over). The image step is intentionally
+// out of scope for this slice — see uploadCaseAndStudies below.
+interface PreparedUpload {
+  title: string;
+  casePayload: Record<string, unknown>;
+  studyBundles: Array<{ study: Record<string, unknown>; series: Series[] }>;
+  totalSeries: number;
+}
+let lastPrepared: PreparedUpload | null = null;
+let uploadInFlight = false;
+
+// Render the preview modal in its initial (pre-submit) state.
+function showUploadPreview(p: PreparedUpload): void {
+  lastPrepared = p;
+  uploadPreviewBlurb.hidden = false;
+  uploadPreviewResult.hidden = true;
+  uploadPreviewResult.innerHTML = '';
+  btnPreviewSubmit.disabled = false;
+  btnPreviewSubmit.textContent = 'Send to Radiopaedia';
+  btnPreviewCancel.disabled = false;
+  btnPreviewCancel.textContent = 'Cancel';
+
   // Summary block ----------------------------------------------------------
   uploadPreviewSummary.innerHTML = '';
   const rows: Array<[string, string]> = [
-    ['Case title', title],
-    ['Studies', String(studyBundles.length)],
-    ['Series', String(totalSeries)],
+    ['Case title', p.title],
+    ['Studies', String(p.studyBundles.length)],
+    ['Series', String(p.totalSeries)],
   ];
   for (const [k, v] of rows) {
     const row = document.createElement('div');
@@ -1910,34 +1927,14 @@ function showUploadPreview(
     uploadPreviewSummary.appendChild(row);
   }
 
-  // Endpoint list ----------------------------------------------------------
-  uploadPreviewEndpoints.innerHTML = '';
-  const endpoints: string[] = [
-    'GET  /api/v1/users/current  (auth + quota check)',
-    'POST /api/v1/cases',
-  ];
-  for (let i = 0; i < studyBundles.length; i++) {
-    endpoints.push(`POST /api/v1/cases/:case_id/studies  (study ${i + 1} of ${studyBundles.length})`);
-  }
-  if (totalSeries > 0) {
-    endpoints.push(
-      `POST /direct_s3_uploads  (×${totalSeries}, one per series stack)`,
-      `PUT  <S3 presigned URL>  (×N, one per DICOM slice)`,
-      `POST /image_preparation/:case_id/studies/:study_id/series  (×${totalSeries}, body carries root_index + perspective + specifics)`,
-    );
-  }
-  endpoints.push('PUT  /api/v1/cases/:case_id/mark_upload_finished');
-  for (const e of endpoints) {
-    const li = document.createElement('li');
-    li.textContent = e;
-    uploadPreviewEndpoints.appendChild(li);
-  }
+  // Step list (state added by the submit handler) --------------------------
+  renderInitialSteps(p.studyBundles.length, p.totalSeries);
 
-  // Payload bodies (collapsed by default to keep the modal scannable) ------
+  // Payload bodies (collapsed by default) ----------------------------------
   uploadPreviewPayloads.innerHTML = '';
-  appendPayload(uploadPreviewPayloads, 'POST /api/v1/cases', casePayload, true);
-  for (let i = 0; i < studyBundles.length; i++) {
-    const { study, series } = studyBundles[i];
+  appendPayload(uploadPreviewPayloads, 'POST /api/v1/cases', p.casePayload, true);
+  for (let i = 0; i < p.studyBundles.length; i++) {
+    const { study, series } = p.studyBundles[i];
     appendPayload(
       uploadPreviewPayloads,
       `POST /api/v1/cases/:case_id/studies — study ${i + 1}`,
@@ -1947,7 +1944,7 @@ function showUploadPreview(
     series.forEach((s, j) => {
       appendPayload(
         uploadPreviewPayloads,
-        `POST /image_preparation/.../series — study ${i + 1}, series ${j + 1}`,
+        `POST /image_preparation/.../series — study ${i + 1}, series ${j + 1} (not sent yet — image upload is the next slice)`,
         buildImagePreparationPreview(s),
         false,
       );
@@ -1957,11 +1954,62 @@ function showUploadPreview(
   uploadPreview.hidden = false;
 }
 
+// Step model — drives the icon column on the left of the modal's step list.
+type StepStatus = 'pending' | 'running' | 'done' | 'error';
+interface UploadStep {
+  id: string;
+  label: string;
+  status: StepStatus;
+  detail?: string;
+}
+let steps: UploadStep[] = [];
+
+function renderInitialSteps(studyCount: number, _totalSeries: number): void {
+  const list: UploadStep[] = [
+    { id: 'auth', label: 'Check auth + quota (GET /users/current)', status: 'pending' },
+    { id: 'case', label: 'Create case (POST /cases)', status: 'pending' },
+  ];
+  for (let i = 0; i < studyCount; i++) {
+    list.push({
+      id: `study:${i}`,
+      label: `Create study ${i + 1} of ${studyCount} (POST /cases/:id/studies)`,
+      status: 'pending',
+    });
+  }
+  list.push({
+    id: 'images',
+    label: 'Upload images (S3 + image_preparation) — not in this slice',
+    status: 'pending',
+  });
+  steps = list;
+  paintSteps();
+}
+
+function paintSteps(): void {
+  uploadPreviewSteps.innerHTML = '';
+  for (const s of steps) {
+    const li = document.createElement('li');
+    li.className = `step-${s.status}`;
+    const icon = document.createElement('span');
+    icon.className = 'step-icon';
+    if (s.status === 'pending') icon.textContent = '○';
+    li.appendChild(icon);
+    const label = document.createElement('span');
+    label.textContent = s.detail ? `${s.label} — ${s.detail}` : s.label;
+    li.appendChild(label);
+    uploadPreviewSteps.appendChild(li);
+  }
+}
+
+function setStep(id: string, status: StepStatus, detail?: string): void {
+  const s = steps.find((x) => x.id === id);
+  if (!s) return;
+  s.status = status;
+  if (detail !== undefined) s.detail = detail;
+  paintSteps();
+}
+
 // Best-guess shape for the image_preparation create body, for preview only.
-// Real values for `stack_upload.uploaded_data` come from /direct_s3_uploads
-// once the live upload is wired; we fill placeholders so the structure is
-// visible. `root_index` defaults to 0 (first slice) — the user can change
-// this once we surface a control for it.
 function buildImagePreparationPreview(s: Series): Record<string, unknown> {
   const seriesBody: Record<string, unknown> = { root_index: 0 };
   if (s.perspective?.trim()) seriesBody.perspective = s.perspective.trim();
@@ -1992,13 +2040,234 @@ function appendPayload(
 }
 
 function hideUploadPreview(): void {
+  if (uploadInFlight) return; // don't let Esc/backdrop kill an in-flight call.
   uploadPreview.hidden = true;
 }
 
+// Live API submission --------------------------------------------------------
+// First slice: create the case + studies on Radiopaedia. Image upload (S3 +
+// image_preparation) lands in a follow-up — see the modal step list. The
+// case is left as a draft (no mark_upload_finished call) so the user can
+// inspect the shape on the website before we wire up images.
+
+interface ApiError extends Error {
+  status?: number;
+  body?: string;
+}
+
+async function radiopaediaApiPost(
+  apiBase: string,
+  path: string,
+  token: string,
+  body: unknown,
+): Promise<Record<string, unknown>> {
+  const res = await fetch(`${apiBase}${path}`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    const err: ApiError = new Error(`${res.status} ${res.statusText} — ${path}`);
+    err.status = res.status;
+    err.body = text;
+    throw err;
+  }
+  return (await res.json()) as Record<string, unknown>;
+}
+
+async function radiopaediaApiGet(
+  apiBase: string,
+  path: string,
+  token: string,
+): Promise<Record<string, unknown>> {
+  const res = await fetch(`${apiBase}${path}`, {
+    headers: { 'Authorization': `Bearer ${token}` },
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    const err: ApiError = new Error(`${res.status} ${res.statusText} — ${path}`);
+    err.status = res.status;
+    err.body = text;
+    throw err;
+  }
+  return (await res.json()) as Record<string, unknown>;
+}
+
+async function uploadCaseAndStudies(p: PreparedUpload): Promise<void> {
+  uploadInFlight = true;
+  btnPreviewSubmit.disabled = true;
+  btnPreviewCancel.disabled = true;
+  btnPreviewCancel.textContent = 'Working…';
+  uploadPreviewBlurb.hidden = true;
+  clearResultBanner();
+
+  let token: string | null;
+  let apiBase: string;
+  try {
+    [token, apiBase] = await Promise.all([
+      window.radiopaedia.getValidAccessToken(),
+      window.radiopaedia.getApiBase(),
+    ]);
+  } catch (e) {
+    return finishWithError('preflight', `Couldn't reach the auth bridge — ${(e as Error).message}`);
+  }
+  if (!token) {
+    return finishWithError(
+      'auth',
+      'No valid access token. Authenticate via Settings → Radiopaedia and try again.',
+    );
+  }
+
+  // 1. Auth + quota check.
+  setStep('auth', 'running');
+  let quotaOk = false;
+  try {
+    const me = await radiopaediaApiGet(apiBase, '/api/v1/users/current', token);
+    const quotas = (me.quotas ?? {}) as Record<string, unknown>;
+    const allowed = quotas.allowed_draft_cases as number | null | undefined;
+    const used = quotas.draft_case_count as number | undefined;
+    if (allowed != null && used != null && used >= allowed) {
+      setStep('auth', 'error', `over draft quota (${used}/${allowed})`);
+      return finishWithError(
+        'auth',
+        `Over draft quota (${used}/${allowed}). Increase your supporter level or delete a draft case before retrying.`,
+      );
+    }
+    quotaOk = true;
+    setStep('auth', 'done', allowed != null ? `quota ${used ?? '?'}/${allowed}` : 'ok');
+  } catch (e) {
+    return apiCallFailed('auth', e);
+  }
+  if (!quotaOk) return; // already returned, but TS narrowing.
+
+  // 2. Create case.
+  setStep('case', 'running');
+  let caseId: number | null = null;
+  try {
+    const created = await radiopaediaApiPost(apiBase, '/api/v1/cases', token, p.casePayload);
+    caseId = (created.id ?? (created.case as { id?: number } | undefined)?.id) as number ?? null;
+    if (!caseId) throw new Error(`POST /cases response had no id: ${JSON.stringify(created)}`);
+    setStep('case', 'done', `case_id=${caseId}`);
+  } catch (e) {
+    return apiCallFailed('case', e);
+  }
+
+  // 3. Create studies sequentially. Concurrent posts would interleave the
+  // server-side position assignments unpredictably; serial is fine because
+  // case-create + a handful of study-creates is a sub-second loop.
+  const studyIds: number[] = [];
+  for (let i = 0; i < p.studyBundles.length; i++) {
+    const stepId = `study:${i}`;
+    setStep(stepId, 'running');
+    try {
+      const created = await radiopaediaApiPost(
+        apiBase,
+        `/api/v1/cases/${caseId}/studies`,
+        token,
+        p.studyBundles[i].study,
+      );
+      const studyId =
+        (created.id ?? (created.study as { id?: number } | undefined)?.id) as number ?? null;
+      if (!studyId) throw new Error(`POST /studies response had no id: ${JSON.stringify(created)}`);
+      studyIds.push(studyId);
+      setStep(stepId, 'done', `study_id=${studyId}`);
+    } catch (e) {
+      return apiCallFailed(stepId, e);
+    }
+  }
+
+  // 4. Images deferred — leave the case as a draft so the user can inspect
+  // the case + study shape on the website. This is the slice boundary; the
+  // next change wires S3 + image_preparation.
+  setStep('images', 'pending', 'left as draft for review — see follow-up');
+
+  finishWithSuccess(apiBase, caseId!, p.title, studyIds);
+}
+
+function apiCallFailed(stepId: string, err: unknown): void {
+  const e = err as ApiError;
+  const status = e?.status ? ` (HTTP ${e.status})` : '';
+  const body = e?.body ? ` — ${e.body.slice(0, 200)}` : '';
+  setStep(stepId, 'error', `${e?.message ?? 'unknown error'}${status}`);
+  finishWithError(stepId, `${e?.message ?? 'request failed'}${status}${body}`);
+}
+
+function finishWithError(_stepId: string, message: string): void {
+  uploadInFlight = false;
+  btnPreviewSubmit.disabled = false;
+  btnPreviewSubmit.textContent = 'Try again';
+  btnPreviewCancel.disabled = false;
+  btnPreviewCancel.textContent = 'Close';
+  uploadPreviewResult.hidden = false;
+  uploadPreviewResult.innerHTML = '';
+  const banner = document.createElement('div');
+  banner.className = 'modal-error';
+  banner.textContent = message;
+  uploadPreviewResult.appendChild(banner);
+  write(`upload failed: ${message}`);
+}
+
+function finishWithSuccess(
+  apiBase: string,
+  caseId: number,
+  title: string,
+  studyIds: number[],
+): void {
+  uploadInFlight = false;
+  btnPreviewSubmit.disabled = true;
+  btnPreviewSubmit.textContent = 'Sent ✓';
+  btnPreviewCancel.disabled = false;
+  btnPreviewCancel.textContent = 'Close';
+  uploadPreviewResult.hidden = false;
+  uploadPreviewResult.innerHTML = '';
+  const caseUrl = `${apiBase}/cases/${caseId}`;
+
+  const heading = document.createElement('div');
+  heading.innerHTML = `<strong>Created draft case ${caseId}</strong> — ${escapeHtmlText(title)}`;
+  const sub = document.createElement('div');
+  sub.style.marginTop = '6px';
+  sub.style.opacity = '0.75';
+  sub.textContent = `${studyIds.length} stud${studyIds.length === 1 ? 'y' : 'ies'} created (no images yet — image upload is the next slice).`;
+  const link = document.createElement('div');
+  link.style.marginTop = '8px';
+  const a = document.createElement('a');
+  a.href = caseUrl;
+  a.textContent = 'Open on Radiopaedia →';
+  a.addEventListener('click', (e) => {
+    e.preventDefault();
+    void window.shellBridge.openExternal(caseUrl).catch((err) => {
+      write(`failed to open browser: ${(err as Error).message ?? err}`);
+    });
+  });
+  link.appendChild(a);
+
+  uploadPreviewResult.appendChild(heading);
+  uploadPreviewResult.appendChild(sub);
+  uploadPreviewResult.appendChild(link);
+  write(`case created on Radiopaedia: ${caseUrl} (${studyIds.length} studies)`);
+}
+
+function clearResultBanner(): void {
+  uploadPreviewResult.innerHTML = '';
+  uploadPreviewResult.hidden = true;
+}
+
+function escapeHtmlText(s: string): string {
+  return s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c] ?? c));
+}
+
+// Modal close + submit wiring -----------------------------------------------
 btnPreviewClose.addEventListener('click', hideUploadPreview);
-btnPreviewOk.addEventListener('click', hideUploadPreview);
+btnPreviewCancel.addEventListener('click', hideUploadPreview);
+btnPreviewSubmit.addEventListener('click', () => {
+  if (!lastPrepared) return;
+  void uploadCaseAndStudies(lastPrepared);
+});
 uploadPreview.addEventListener('click', (e) => {
-  // Click on the dim backdrop (but not the modal itself) closes.
   if (e.target === uploadPreview) hideUploadPreview();
 });
 document.addEventListener('keydown', (e) => {

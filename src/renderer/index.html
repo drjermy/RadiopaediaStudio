@@ -790,6 +790,61 @@
       font-size: 13px;
       margin: 0 0 12px 0;
     }
+    .modal-info {
+      padding: 10px 12px;
+      background: rgba(10, 132, 255, 0.10);
+      border: 1px solid rgba(10, 132, 255, 0.35);
+      border-radius: 6px;
+      font-size: 13px;
+      margin: 0 0 12px 0;
+    }
+    .modal-error {
+      padding: 10px 12px;
+      background: rgba(220, 38, 38, 0.12);
+      border: 1px solid rgba(220, 38, 38, 0.4);
+      border-radius: 6px;
+      font-size: 13px;
+      margin: 0 0 12px 0;
+    }
+    .upload-steps {
+      list-style: none;
+      padding-left: 0;
+      margin: 0;
+      font-size: 13px;
+    }
+    .upload-steps li {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 0;
+    }
+    .upload-steps li .step-icon {
+      width: 16px;
+      flex: 0 0 16px;
+      text-align: center;
+    }
+    .upload-steps li.step-pending .step-icon { opacity: 0.4; }
+    .upload-steps li.step-pending { opacity: 0.6; }
+    .upload-steps li.step-running .step-icon::after {
+      content: '⟳';
+      display: inline-block;
+      animation: spin 1s linear infinite;
+    }
+    .upload-steps li.step-done .step-icon::after { content: '✓'; color: #2c8c3a; }
+    .upload-steps li.step-error .step-icon::after { content: '✗'; color: #d14; }
+    @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+    .upload-result {
+      padding: 12px;
+      border-radius: 6px;
+      background: rgba(127, 127, 127, 0.08);
+      border: 1px solid rgba(127, 127, 127, 0.25);
+      font-size: 13px;
+    }
+    .upload-result a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+    .upload-result a:hover { text-decoration: underline; }
     .preview-summary {
       font-size: 13px;
       line-height: 1.6;
@@ -1127,23 +1182,25 @@
   <div id="upload-preview" class="modal-overlay" hidden>
     <div class="modal" role="dialog" aria-labelledby="upload-preview-title">
       <div class="modal-header">
-        <h2 id="upload-preview-title">Upload preview</h2>
+        <h2 id="upload-preview-title">Review &amp; create case</h2>
         <button id="btn-preview-close" class="icon-btn" aria-label="Close" type="button">×</button>
       </div>
       <div class="modal-body">
-        <p class="modal-warning">
-          <strong>No upload has happened yet.</strong>
-          Live Radiopaedia API integration isn't wired up — this is a preview
-          of the requests that would be sent.
+        <p id="upload-preview-blurb" class="modal-info">
+          The case and study records will be created on Radiopaedia as a draft.
+          Image upload isn't wired up yet — you'll get a link back to inspect
+          the case shape on the site.
         </p>
         <div id="upload-preview-summary" class="preview-summary"></div>
-        <h3>Endpoints that would be called</h3>
-        <ol id="upload-preview-endpoints" class="preview-endpoints"></ol>
+        <h3>Steps</h3>
+        <ol id="upload-preview-steps" class="upload-steps"></ol>
         <h3>Request bodies</h3>
         <div id="upload-preview-payloads" class="preview-payloads"></div>
+        <div id="upload-preview-result" class="upload-result" hidden></div>
       </div>
       <div class="modal-footer">
-        <button id="btn-preview-ok" class="primary" type="button">Got it</button>
+        <button id="btn-preview-cancel" type="button">Cancel</button>
+        <button id="btn-preview-submit" class="primary" type="button">Send to Radiopaedia</button>
       </div>
     </div>
   </div>

@@ -14,6 +14,7 @@ import {
   type RadiopaediaClientOverride,
 } from './credentials';
 import { getValidAccessToken } from './radiopaedia-auth';
+import { RADIOPAEDIA_API_BASE } from './radiopaedia-config';
 import {
   openAuthorizationPage,
   exchangeAuthorizationCode,
@@ -82,6 +83,14 @@ app.whenReady().then(async () => {
   ipcMain.handle('shell:reveal', (_evt, p: string) => {
     shell.showItemInFolder(p);
   });
+  ipcMain.handle('shell:openExternal', async (_evt, url: string): Promise<void> => {
+    // Whitelist http(s) so a malicious renderer-side bug can't ask main to
+    // launch arbitrary file:// or shell URLs.
+    if (!/^https?:\/\//i.test(url)) {
+      throw new Error(`shell:openExternal rejected non-http URL: ${url}`);
+    }
+    await shell.openExternal(url);
+  });
   ipcMain.handle(
     'credentials:get-radiopaedia-tokens',
     (): RadiopaediaTokens | null => getRadiopaediaTokens(),
@@ -108,6 +117,14 @@ app.whenReady().then(async () => {
   ipcMain.handle(
     'radiopaedia:get-valid-access-token',
     (): Promise<string | null> => getValidAccessToken(),
+  );
+  ipcMain.handle(
+    'radiopaedia:get-api-base',
+    // Renderer needs the configured base (prod / staging / dev) to assemble
+    // request URLs and to derive the case-detail URL we surface back to the
+    // user. Wired through main rather than baked into the bundle so a
+    // staging build can override at run time without recompiling.
+    (): string => RADIOPAEDIA_API_BASE,
   );
   ipcMain.handle(
     'radiopaedia:open-authorization-page',
