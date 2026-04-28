@@ -48,6 +48,23 @@ _TEMPLATE_TAGS = (
 )
 
 
+def _ds(v: float) -> str:
+    """Format a float as a DICOM Decimal String (DS) — VR limit is 16 chars.
+
+    Default `float()` -> DSfloat in pydicom keeps the full Python repr, which
+    overflows DS for typical mm-scale values (e.g. -191.30984871962332 = 19
+    chars, 2.000360804591878 = 17 chars). Strict DICOM readers reject those;
+    Radiopaedia's downstream tooling silently truncates and produces wrong
+    values. 6 significant figures is plenty for clinical spacing / position
+    in mm and always fits in 16 chars within ±999_999.
+    """
+    return f'{v:.6g}'
+
+
+def _ds_list(vs) -> list[str]:
+    return [_ds(float(v)) for v in vs]
+
+
 def read_series(input_dir: Path) -> list[Dataset]:
     """Read every DICOM slice in input_dir (recursive), skipping unreadable
     or non-image files. Returns in file-name order (sorted later)."""
@@ -225,11 +242,11 @@ def iter_write_series(images: list[np.ndarray], positions: list[np.ndarray], iop
         ds.InstanceNumber = idx
         ds.FrameOfReferenceUID = frame_of_reference
 
-        ds.ImageOrientationPatient = list(iop)
-        ds.ImagePositionPatient = [float(v) for v in ipp]
-        ds.PixelSpacing = [float(pixel_spacing[0]), float(pixel_spacing[1])]
-        ds.SliceThickness = float(thickness)
-        ds.SpacingBetweenSlices = float(spacing)
+        ds.ImageOrientationPatient = _ds_list(iop)
+        ds.ImagePositionPatient = _ds_list(ipp)
+        ds.PixelSpacing = _ds_list(pixel_spacing)
+        ds.SliceThickness = _ds(float(thickness))
+        ds.SpacingBetweenSlices = _ds(float(spacing))
 
         ds.Rows, ds.Columns = img.shape
         ds.SamplesPerPixel = 1
