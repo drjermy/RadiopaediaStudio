@@ -1,12 +1,25 @@
-// Packaged-app smoke. The dev-tree smoke (smoke.spec.ts) runs against the
-// repo checkout where every file is reachable, so it cannot catch packaging
-// regressions: a missing file in the asar, an `extraResources` filter that
-// drops a sidecar import, an asset reference that only fails once everything
-// is rolled into Contents/Resources/. This spec exists to catch those.
+// End-to-end smoke for the packaged Mac .app. `npm run test:e2e` runs
+// `npm run pack` first so the binary is always fresh.
 //
-// Skipped automatically when build/mac-arm64/Radiopaedia Studio.app is
-// absent — keeps `npm run test:e2e` green for contributors who haven't run
-// `npm run pack` yet. CI / release flows should run pack first.
+// Why packaged-only (no dev-tree spec): running `electron .` against the
+// source checkout can't catch packaging regressions — a missing file in
+// the asar, an `extraResources` filter that drops a sidecar import, an
+// asset reference that only fails once everything is rolled into
+// Contents/Resources/. Each of those has bitten us in real life. So we
+// pay the pack cost once per e2e run and get the comprehensive surface.
+//
+// Tests are grouped by lifecycle:
+//
+//   - boot integrity: shared per-test app launch, asserts on
+//     load-time invariants (renderer assets, IPC bridges, sidecar
+//     health, color-scheme contract).
+//   - process lifecycle: per-test app management, covers SIGKILL +
+//     reaper invariants that don't fit the shared launch pattern.
+//   - auth flow / sent cases: isolated --user-data-dir per test so
+//     credentials and localStorage don't leak between runs.
+//
+// Auto-skips if the .app is missing — defends against someone running
+// `playwright test` directly without going through `npm run test:e2e`.
 
 import { test, expect, _electron as electron, ElectronApplication, Page } from '@playwright/test';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
@@ -203,6 +216,48 @@ test.describe('packaged app — boot integrity', () => {
     // it's an https URL with no trailing slash, so the renderer can
     // assemble request URLs by string-concat without surprises.
     expect(apiBase).toMatch(/^https:\/\/[^/]+(\.[^/]+)+$/);
+  });
+
+  test('auth modal background flips with OS color-scheme', async () => {
+    // Probes the actual `.modal` card inside the auth modal, which uses
+    // `background: Canvas; color: CanvasText;`. emulateMedia flips the
+    // page's prefers-color-scheme matchMedia, which is what those CSS
+    // keywords resolve through (combined with `:root { color-scheme:
+    // light dark }`). Asserting on the real surface (not a synthetic
+    // off-screen probe — see #18) catches the regression class where
+    // someone hard-codes `#fff` in modal CSS but leaves the :root
+    // declaration alone.
+    const win = await app.firstWindow();
+    const probe = async (): Promise<{ bg: string; fg: string }> => {
+      await win.locator('#btn-auth').click();
+      await expect(win.locator('#auth-modal')).toBeVisible();
+      const out = await win.locator('#auth-modal .modal').evaluate((el) => {
+        const cs = getComputedStyle(el);
+        return { bg: cs.backgroundColor, fg: cs.color };
+      });
+      await win.locator('#btn-auth-close').click();
+      await expect(win.locator('#auth-modal')).toBeHidden();
+      return out;
+    };
+    // Rec. 709 perceptual luminance, 0–255. We assert ranges, not exact
+    // values, because the OS-resolved Canvas colour shifts across
+    // Chromium versions.
+    const lum = (rgb: string): number => {
+      const m = rgb.match(/\d+(\.\d+)?/g);
+      if (!m || m.length < 3) return 0;
+      const [r, g, b] = m.slice(0, 3).map(Number);
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+
+    await win.emulateMedia({ colorScheme: 'dark' });
+    const dark = await probe();
+    expect(lum(dark.bg), 'dark scheme: modal background should be dark').toBeLessThan(96);
+    expect(lum(dark.fg), 'dark scheme: modal foreground should be light').toBeGreaterThan(160);
+
+    await win.emulateMedia({ colorScheme: 'light' });
+    const light = await probe();
+    expect(lum(light.bg), 'light scheme: modal background should be light').toBeGreaterThan(160);
+    expect(lum(light.fg), 'light scheme: modal foreground should be dark').toBeLessThan(96);
   });
 
   test('shellBridge.openExternal rejects non-http URLs', async () => {

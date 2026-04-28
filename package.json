@@ -14,7 +14,7 @@
     "build": "npm run build:frontend",
     "dev": "npm run build:frontend && electron .",
     "test": "node --test test/*.test.mjs",
-    "test:e2e": "npm run build:frontend && playwright test",
+    "test:e2e": "npm run pack && playwright test",
     "pack": "npm run build:backend && npm run build:node && npm run build:frontend && electron-builder --mac --dir",
     "dist": "npm run build:backend && npm run build:node && npm run build:frontend && electron-builder --mac"
   },
