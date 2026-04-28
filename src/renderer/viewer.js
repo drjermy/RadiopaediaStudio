@@ -476,20 +476,17 @@ async function open(folder, container, opts = {}) {
     if (e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
     if (e.metaKey || e.ctrlKey || e.altKey) return;
 
-    // Arrow keys scroll one image. Works in both volume and stack modes.
-    // For volumes at non-native slab spacing we step a full slab (mirrors
-    // wheelHandler) so arrow ↓ advances to the next visible slab rather
-    // than fractionally between slabs.
+    // Arrow keys advance one image — always scroll(1). We deliberately
+    // don't mirror the wheelHandler's "round(slabSpacing/grid)" stepping:
+    // a wheel tick is a continuous gesture where one notch of motion
+    // should be a meaningful slab move; an arrow press is discrete and
+    // the user expects 1:1 ("I hit ↓ once, I see the next image"). At
+    // non-native slab spacing this means arrows step finer than slab
+    // jumps, which is consistent with how every other DICOM viewer
+    // pages through the underlying slice grid.
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault();
-      const dir = e.key === 'ArrowDown' ? 1 : -1;
-      if (currentIsVolume) {
-        const grid = rawNormalSpacingMm();
-        const steps = grid > 0 ? Math.max(1, Math.round(slabSpacing / grid)) : 1;
-        currentViewport.scroll(dir * steps);
-      } else {
-        currentViewport.scroll(dir);
-      }
+      currentViewport.scroll(e.key === 'ArrowDown' ? 1 : -1);
       return;
     }
 
