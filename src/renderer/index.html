@@ -151,21 +151,6 @@
       font-style: italic;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
-    /* Small numeric badge tucked next to a header-button label
-       (currently only "Log" — used for unread-message count). */
-    .header-badge {
-      display: inline-block;
-      margin-left: 6px;
-      padding: 1px 6px;
-      background: var(--accent);
-      color: white;
-      border-radius: 9px;
-      font-size: 10px;
-      font-weight: 600;
-      line-height: 1.4;
-      min-width: 12px;
-      text-align: center;
-    }
 
     /* Study summary */
     .study-summary {
@@ -1179,7 +1164,7 @@
     <div class="header-actions">
       <button id="btn-open-folder">Open Folder</button>
       <button id="btn-reset" hidden>Clear</button>
-      <button id="btn-log" type="button">Log<span id="btn-log-badge" class="header-badge" hidden></span></button>
+      <button id="btn-log" type="button">Log</button>
       <button id="btn-auth" type="button">Sign in to Radiopaedia</button>
     </div>
   </div>
