@@ -30,6 +30,15 @@ import {
   deriveDefaultCase,
   perspectiveConfigFor,
 } from '../shared/api.js';
+import {
+  addOrReplaceSentCase,
+  buildSentCase,
+  capSentCases,
+  mergeJobStatuses,
+  parseSentCases,
+  removeSentCase as removeSentCaseCore,
+  type SentCase,
+} from '../shared/sent-cases-core.js';
 import type { ViewerStateDetail } from './globals';
 
 // Elements ------------------------------------------------------------------
@@ -2609,32 +2618,9 @@ const SENT_CASES_KEY = 'radiopaedia-studio:sent-cases';
 const SENT_CASES_VERSION = 1;
 const SENT_CASES_MAX = 50;
 
-interface SentCase {
-  v: number;
-  caseId: number;
-  apiBase: string;
-  title: string;
-  uploadedAt: string; // ISO
-  jobs: Array<{
-    studyIdx: number;
-    seriesIdx: number;
-    studyId: number;
-    jobId: string;
-    lastKnownStatus: _ProcessingStatus | null;
-    lastCheckedAt: string | null;
-  }>;
-}
-
 function readSentCases(): SentCase[] {
   try {
-    const raw = localStorage.getItem(SENT_CASES_KEY);
-    if (!raw) return [];
-    const arr = JSON.parse(raw) as SentCase[];
-    // Filter out anything not at the current schema version — quietly
-    // drop old rows rather than try to migrate. The data is already
-    // committed to Radiopaedia, so losing the local pointer is
-    // recoverable (user can navigate to it via the website).
-    return Array.isArray(arr) ? arr.filter((c) => c?.v === SENT_CASES_VERSION) : [];
+    return parseSentCases(localStorage.getItem(SENT_CASES_KEY), SENT_CASES_VERSION);
   } catch {
     return [];
   }
@@ -2642,9 +2628,7 @@ function readSentCases(): SentCase[] {
 
 function writeSentCases(cases: SentCase[]): void {
   try {
-    // Cap at SENT_CASES_MAX entries, newest first.
-    const trimmed = cases.slice(0, SENT_CASES_MAX);
-    localStorage.setItem(SENT_CASES_KEY, JSON.stringify(trimmed));
+    localStorage.setItem(SENT_CASES_KEY, JSON.stringify(capSentCases(cases, SENT_CASES_MAX)));
   } catch {
     // Storage full / disabled — non-fatal; the upload itself succeeded.
   }
@@ -2656,24 +2640,8 @@ function recordSentCase(
   title: string,
   jobs: _UploadedJob[],
 ): void {
-  const entry: SentCase = {
-    v: SENT_CASES_VERSION,
-    caseId,
-    apiBase,
-    title,
-    uploadedAt: new Date().toISOString(),
-    jobs: jobs.map((j) => ({
-      ...j,
-      lastKnownStatus: null,
-      lastCheckedAt: null,
-    })),
-  };
-  const existing = readSentCases();
-  // Replace any prior entry for the same case (e.g. same retry) — newest
-  // representation wins.
-  const filtered = existing.filter((c) => !(c.caseId === caseId && c.apiBase === apiBase));
-  filtered.unshift(entry);
-  writeSentCases(filtered);
+  const entry = buildSentCase(SENT_CASES_VERSION, caseId, apiBase, title, jobs, new Date().toISOString());
+  writeSentCases(addOrReplaceSentCase(readSentCases(), entry));
 }
 
 function updateSentCaseJobStatuses(
@@ -2681,23 +2649,11 @@ function updateSentCaseJobStatuses(
   apiBase: string,
   updates: Array<{ jobId: string; status: _ProcessingStatus }>,
 ): void {
-  const existing = readSentCases();
-  const idx = existing.findIndex((c) => c.caseId === caseId && c.apiBase === apiBase);
-  if (idx < 0) return;
-  const checkedAt = new Date().toISOString();
-  const target = existing[idx];
-  const byJobId = new Map(updates.map((u) => [u.jobId, u.status]));
-  target.jobs = target.jobs.map((j) => {
-    const next = byJobId.get(j.jobId);
-    if (next == null) return j;
-    return { ...j, lastKnownStatus: next, lastCheckedAt: checkedAt };
-  });
-  existing[idx] = target;
-  writeSentCases(existing);
+  writeSentCases(mergeJobStatuses(readSentCases(), caseId, apiBase, updates, new Date().toISOString()));
 }
 
 function removeSentCase(caseId: number, apiBase: string): void {
-  writeSentCases(readSentCases().filter((c) => !(c.caseId === caseId && c.apiBase === apiBase)));
+  writeSentCases(removeSentCaseCore(readSentCases(), caseId, apiBase));
 }
 
 function phaseLabel(phase: 'stage' | 'hash' | 'presign' | 'upload' | 'prepare'): string {

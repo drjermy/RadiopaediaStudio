@@ -17,6 +17,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getValidAccessToken } from './radiopaedia-auth';
 import { RADIOPAEDIA_API_BASE } from './radiopaedia-config';
+import {
+  checkUploadStatusCore,
+  HttpError as CoreHttpError,
+  type ProcessingStatus as CoreProcessingStatus,
+  type UploadedJob as CoreUploadedJob,
+} from './upload-images-core';
 
 export interface SeriesUploadSpec {
   /** Folder of anonymised DICOMs for this series. */
@@ -42,18 +48,10 @@ export interface ImageUploadSpec {
 export type UploadPhase = 'stage' | 'hash' | 'presign' | 'upload' | 'prepare';
 
 /**
- * Identifies an in-flight processing job on Radiopaedia. Each
- * `/image_preparation/.../series` POST returns a job_id; we capture
- * them so the renderer can poll the upload-status endpoint later (the
- * Sent-cases panel — see issue #25).
+ * Identifies an in-flight processing job on Radiopaedia. Re-exported
+ * from upload-images-core so callers can keep importing it from here.
  */
-export interface UploadedJob {
-  studyIdx: number;
-  seriesIdx: number;
-  caseId: number;
-  studyId: number;
-  jobId: string;
-}
+export type UploadedJob = CoreUploadedJob;
 
 export type UploadEvent =
   | { type: 'budget'; totalBytes: number; totalFiles: number }
@@ -83,15 +81,11 @@ const S3_PUT_CONCURRENCY = 4;
 // strictly synchronous from the PUT 200.
 const POST_PUT_SETTLE_MS = 2_000;
 
-class HttpError extends Error {
-  status: number;
-  body: string;
-  constructor(message: string, status: number, body: string) {
-    super(message);
-    this.status = status;
-    this.body = body;
-  }
-}
+// Re-uses the core's HttpError so production code paths and the unit
+// tests both throw / catch the same class. Local alias keeps the
+// existing call sites unchanged.
+const HttpError = CoreHttpError;
+type HttpError = InstanceType<typeof CoreHttpError>;
 
 interface DiscoveredSeries {
   files: Array<{ path: string; size: number }>;
@@ -374,98 +368,24 @@ interface UploadSeriesArgs {
   signal: AbortSignal;
 }
 
-/**
- * Per-series processing status returned by Radiopaedia's
- * `/image_preparation/.../upload/:upload_id` polling endpoint.
- *
- * `pending-upload` → /image_preparation accepted the request; the
- * background job hasn't finished creating the Series record yet.
- * `pending-dicom-processing` → series exists, DICOM-to-PNG conversion
- * still running.
- * `completed-dicom-processing` → conversion done, no trim/crop pending.
- * `ready` → fully ready to display.
- * `failed` → terminal — the job finished without creating a series. We
- * synthesise this client-side; the API doesn't have a literal "failed"
- * string and (per the handoff doc, item #8) doesn't surface the reason.
- */
-export type ProcessingStatus =
-  | 'pending-upload'
-  | 'pending-dicom-processing'
-  | 'completed-dicom-processing'
-  | 'ready'
-  | 'failed';
+// Re-export from core so existing imports still resolve.
+export type ProcessingStatus = CoreProcessingStatus;
 
 /**
  * On-demand status check for a previously-uploaded case. Used by the
- * Sent-cases panel to refresh per-job processing state.
- *
- * Single round-trip per job, no looping — the panel decides when to
- * call again. Returns one entry per input job.
+ * Sent-cases panel to refresh per-job processing state. Thin wrapper
+ * around `checkUploadStatusCore` that binds production deps (real
+ * fetch, real auth, configured api base).
  */
 export async function checkUploadStatus(
   jobs: UploadedJob[],
   signal: AbortSignal,
 ): Promise<Array<{ jobId: string; status: ProcessingStatus }>> {
-  const token = await getValidAccessToken();
-  if (!token) {
-    throw new Error('No valid access token. Sign in to Radiopaedia and try again.');
-  }
-  const apiBase = RADIOPAEDIA_API_BASE;
-  const out: Array<{ jobId: string; status: ProcessingStatus }> = [];
-  for (const job of jobs) {
-    if (signal.aborted) break;
-    try {
-      const status = await fetchJobStatus(apiBase, job, token, signal);
-      out.push({ jobId: job.jobId, status });
-    } catch {
-      // Single-job error doesn't kill the batch — record as pending and
-      // let the user retry. (Ideally we'd log, but main doesn't have a
-      // user-facing log surface here; the renderer can decide what to
-      // show based on missing entries.)
-      out.push({ jobId: job.jobId, status: 'pending-upload' });
-    }
-  }
-  return out;
-}
-
-async function fetchJobStatus(
-  apiBase: string,
-  j: UploadedJob,
-  bearer: string,
-  signal: AbortSignal,
-): Promise<ProcessingStatus> {
-  // GET /image_preparation/:case_id/studies/:study_id/upload/:upload_id
-  // returns 202 while the job is running, 200 once finished. The 200 body
-  // is the StudyImagePreparationSerializer + SeriesImagePreparationSerializer
-  // merged under their respective root keys, e.g.
-  //   { study: { studyId, series: [...], ... },
-  //     series: { seriesId, status: 'ready' | 'completed-dicom-processing'
-  //                                   | 'pending-dicom-processing'
-  //                                   | 'pending-trim' | 'pending-crop', ... } }
-  // Absence of the `series` root means the background job finished without
-  // creating a series — upload failure (no reason surfaced; see handoff
-  // doc item #8).
-  //
-  // The case_id segment looks redundant given the route matches on
-  // upload_id alone, but the controller's `find_case` runs in a
-  // before_action and 401s if the lookup fails — so the real case id has
-  // to be sent.
-  const url = `${apiBase}/image_preparation/${j.caseId}/studies/${j.studyId}/upload/${encodeURIComponent(j.jobId)}`;
-  const res = await fetch(url, {
-    headers: { 'Authorization': `Bearer ${bearer}`, 'Accept': 'application/json' },
-    signal,
+  return checkUploadStatusCore(jobs, signal, {
+    fetch: (...args) => fetch(...args),
+    getValidAccessToken,
+    apiBase: RADIOPAEDIA_API_BASE,
   });
-  if (res.status === 202) return 'pending-upload';
-  if (!res.ok) throw new HttpError(`GET upload status`, res.status, await res.text().catch(() => ''));
-  const body = (await res.json()) as Record<string, unknown>;
-  const seriesPayload = body.series as Record<string, unknown> | undefined;
-  if (seriesPayload && seriesPayload.seriesId != null) {
-    const status = String(seriesPayload.status ?? '');
-    if (status === 'ready') return 'ready';
-    if (status === 'completed-dicom-processing') return 'completed-dicom-processing';
-    return 'pending-dicom-processing';
-  }
-  return 'failed';
 }
 
 async function uploadSeries(args: UploadSeriesArgs): Promise<{ jobId: string | null }> {
