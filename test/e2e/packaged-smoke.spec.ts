@@ -527,3 +527,148 @@ test.describe('packaged app — auth flow', () => {
     await expect(win.locator('#auth-signed-out')).toBeVisible();
   });
 });
+
+test.describe('packaged app — sent cases', () => {
+  test.skip(!existsSync(APP_BIN), `packaged binary missing — run \`npm run pack\``);
+
+  // Same isolated --user-data-dir pattern as auth-flow: tokens are seeded
+  // via IPC and localStorage is seeded via win.evaluate, so no real
+  // upload has to run before these tests are meaningful.
+  let app: ElectronApplication;
+  let win: Page;
+  let userDataDir: string;
+
+  // Minimal SentCase entry that matches the renderer's schema (#25).
+  // Single job so the summary count is unambiguous when it flips to
+  // "1 ready" / "1 processing".
+  const SEED_SENT_CASE = {
+    v: 1,
+    caseId: 12345,
+    apiBase: 'https://env-develop.radiopaedia-dev.org',
+    title: 'Test seeded case',
+    uploadedAt: new Date().toISOString(),
+    jobs: [
+      {
+        studyIdx: 0,
+        seriesIdx: 0,
+        studyId: 678,
+        jobId: 'job-abc',
+        lastKnownStatus: null,
+        lastCheckedAt: null,
+      },
+    ],
+  };
+
+  test.beforeEach(async () => {
+    userDataDir = mkdtempSync(path.join(os.tmpdir(), 'rp-studio-test-'));
+    app = await electron.launch({
+      executablePath: APP_BIN,
+      args: [`--user-data-dir=${userDataDir}`],
+    });
+    win = await app.firstWindow();
+    await expect(win.locator('#drop')).toBeVisible();
+    // Seed tokens so checkUploadStatus's getValidAccessToken returns one
+    // and the fetch actually fires from main.
+    await win.evaluate(() => {
+      const w = window as unknown as {
+        credentials: { setRadiopaediaTokens: (t: unknown) => Promise<void> };
+      };
+      return w.credentials.setRadiopaediaTokens({
+        access_token: 'seeded-access',
+        refresh_token: 'seeded-refresh',
+        expires_at: Math.floor(Date.now() / 1000) + 3600,
+        token_type: 'Bearer',
+      });
+    });
+    // Seed localStorage with a SentCase. localStorage is per-origin
+    // (file://) and persists across reloads within a session, so this
+    // survives the reload below.
+    await win.evaluate((entry) => {
+      localStorage.setItem('radiopaedia-studio:sent-cases', JSON.stringify([entry]));
+    }, SEED_SENT_CASE);
+  });
+
+  test.afterEach(async () => {
+    await app?.close().catch(() => undefined);
+    if (userDataDir) rmSync(userDataDir, { recursive: true, force: true });
+  });
+
+  test('opening the panel round-trips check-status and renders ready', async () => {
+    // Stub main's fetch for the /image_preparation/ endpoint that
+    // checkUploadStatus hits. Returns a 200 with a series.status of
+    // 'ready', which the renderer renders as a "1 ready" pill.
+    await app.evaluate(() => {
+      const orig = globalThis.fetch;
+      globalThis.fetch = (async (input: unknown, init: unknown): Promise<Response> => {
+        const url = typeof input === 'string' ? input : (input as { url: string }).url;
+        if (url.includes('/image_preparation/')) {
+          return new Response(
+            JSON.stringify({
+              study: { studyId: 678, series: [] },
+              series: { seriesId: 999, status: 'ready' },
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          );
+        }
+        return orig(input as RequestInfo, init as RequestInit | undefined);
+      }) as typeof fetch;
+    });
+
+    await win.locator('#btn-sent').click();
+    await expect(win.locator('#sent-modal')).toBeVisible();
+    // Initial render shows "Status not checked yet" — that's pre-fetch.
+    // Once the auto-refresh resolves and updateSentCaseJobStatuses
+    // re-renders, the summary flips to "1 ready".
+    await expect(win.locator('.sent-row-summary')).toContainText(/1 ready/);
+  });
+
+  test('closing the panel cancels an in-flight status check', async () => {
+    // Hang the fetch but listen to the abort signal so the test can
+    // observe the cancellation. Stash the abort flag on globalThis so
+    // a follow-up app.evaluate can read it.
+    await app.evaluate(() => {
+      const orig = globalThis.fetch;
+      (globalThis as Record<string, unknown>).__fetchCalled = false;
+      (globalThis as Record<string, unknown>).__fetchAborted = false;
+      globalThis.fetch = (async (input: unknown, init: unknown): Promise<Response> => {
+        const url = typeof input === 'string' ? input : (input as { url: string }).url;
+        if (url.includes('/image_preparation/')) {
+          (globalThis as Record<string, unknown>).__fetchCalled = true;
+          return new Promise<Response>((_resolve, reject) => {
+            const signal = (init as { signal?: AbortSignal })?.signal;
+            if (signal) {
+              signal.addEventListener('abort', () => {
+                (globalThis as Record<string, unknown>).__fetchAborted = true;
+                reject(new Error('aborted'));
+              });
+            }
+            // Never resolve — only the abort path completes the promise.
+          });
+        }
+        return orig(input as RequestInfo, init as RequestInit | undefined);
+      }) as typeof fetch;
+    });
+
+    await win.locator('#btn-sent').click();
+    await expect(win.locator('#sent-modal')).toBeVisible();
+    // Wait for the fetch to actually start before closing — otherwise
+    // the close races the IPC dispatch and there's nothing to abort.
+    await expect
+      .poll(async () =>
+        app.evaluate(() => (globalThis as Record<string, unknown>).__fetchCalled),
+      )
+      .toBe(true);
+
+    await win.locator('#btn-sent-close').click();
+    await expect(win.locator('#sent-modal')).toBeHidden();
+
+    // The cancel-status-check IPC fires when the modal closes; main
+    // aborts the controller, our hung fetch sees the abort and flips
+    // the flag. Poll briefly — the abort propagation is async.
+    await expect
+      .poll(async () =>
+        app.evaluate(() => (globalThis as Record<string, unknown>).__fetchAborted),
+      )
+      .toBe(true);
+  });
+});
