@@ -8,8 +8,8 @@
 // absent — keeps `npm run test:e2e` green for contributors who haven't run
 // `npm run pack` yet. CI / release flows should run pack first.
 
-import { test, expect, _electron as electron, ElectronApplication } from '@playwright/test';
-import { existsSync, readFileSync } from 'fs';
+import { test, expect, _electron as electron, ElectronApplication, Page } from '@playwright/test';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
@@ -307,5 +307,223 @@ test.describe('packaged app — process lifecycle', () => {
     } finally {
       await b.close();
     }
+  });
+});
+
+test.describe('packaged app — auth flow', () => {
+  test.skip(!existsSync(APP_BIN), `packaged binary missing — run \`npm run pack\``);
+
+  // Each auth test runs against an isolated --user-data-dir so credentials
+  // don't leak between tests or pollute the user's real Radiopaedia Studio
+  // tokens. The OS keychain entry that backs safeStorage is shared, but
+  // tokens themselves live in userData and are wiped with the tmp dir.
+  let app: ElectronApplication;
+  let win: Page;
+  let userDataDir: string;
+
+  test.beforeEach(async () => {
+    userDataDir = mkdtempSync(path.join(os.tmpdir(), 'rp-studio-test-'));
+    app = await electron.launch({
+      executablePath: APP_BIN,
+      args: [`--user-data-dir=${userDataDir}`],
+    });
+    win = await app.firstWindow();
+    await expect(win.locator('#drop')).toBeVisible();
+  });
+
+  test.afterEach(async () => {
+    await app?.close().catch(() => undefined);
+    if (userDataDir) rmSync(userDataDir, { recursive: true, force: true });
+  });
+
+  test('Open Radiopaedia → calls shell.openExternal with the authorize URL', async () => {
+    // Patch electron.shell.openExternal in main so the test can capture the
+    // URL the IPC handler builds — using the real implementation would
+    // launch the user's browser. Stash the captured URL on globalThis so
+    // a follow-up app.evaluate can read it back across the IPC boundary.
+    await app.evaluate(({ shell }) => {
+      const orig = shell.openExternal;
+      (globalThis as Record<string, unknown>).__capturedAuthUrl = null;
+      shell.openExternal = async (url: string): Promise<void> => {
+        (globalThis as Record<string, unknown>).__capturedAuthUrl = url;
+        shell.openExternal = orig;
+      };
+    });
+
+    await win.locator('#btn-auth').click();
+    await expect(win.locator('#auth-modal')).toBeVisible();
+    await expect(win.locator('#btn-auth-open')).toBeVisible();
+    await win.locator('#btn-auth-open').click();
+
+    const captured = await app.evaluate(
+      () => (globalThis as Record<string, unknown>).__capturedAuthUrl as string | null,
+    );
+    expect(captured, 'shell.openExternal should have been called').toBeTruthy();
+    const url = new URL(captured!);
+    expect(url.pathname).toBe('/oauth/authorize');
+    expect(url.searchParams.get('response_type')).toBe('code');
+    expect(url.searchParams.get('client_id')).toMatch(/.+/);
+    expect(url.searchParams.get('redirect_uri')).toBe('urn:ietf:wg:oauth:2.0:oob');
+  });
+
+  test('sign-out clears tokens and flips header button back', async () => {
+    // Seed tokens via the same IPC the success path uses, then reload so
+    // the renderer re-reads auth state on boot. After reload the header
+    // should show the authed treatment, the modal should expose the
+    // sign-out button, and clicking it should clear persisted tokens.
+    const seedTokens = {
+      access_token: 'seeded-access',
+      refresh_token: 'seeded-refresh',
+      // Far future so getValidAccessToken doesn't try to refresh.
+      expires_at: Math.floor(Date.now() / 1000) + 3600,
+      token_type: 'Bearer' as const,
+    };
+    await win.evaluate((tokens) => {
+      const w = window as unknown as {
+        credentials: {
+          setRadiopaediaTokens: (t: typeof tokens) => Promise<void>;
+        };
+      };
+      return w.credentials.setRadiopaediaTokens(tokens);
+    }, seedTokens);
+    await win.reload();
+    await expect(win.locator('#drop')).toBeVisible();
+    await expect(win.locator('#btn-auth')).toHaveText(/Radiopaedia ✓/);
+
+    await win.locator('#btn-auth').click();
+    await expect(win.locator('#auth-modal')).toBeVisible();
+    await expect(win.locator('#auth-signed-in')).toBeVisible();
+    await win.locator('#btn-auth-signout').click();
+
+    // Sign-out is async (IPC round-trip + UI repaint). Wait for the
+    // header to flip rather than asserting immediately.
+    await expect(win.locator('#btn-auth')).toHaveText(/Sign in to Radiopaedia/);
+    const tokensAfter = await win.evaluate(() => {
+      const w = window as unknown as {
+        credentials: { getRadiopaediaTokens: () => Promise<unknown> };
+      };
+      return w.credentials.getRadiopaediaTokens();
+    });
+    expect(tokensAfter, 'tokens should be cleared after sign-out').toBeNull();
+  });
+
+  test('signed-in modal renders profile from /users/current', async () => {
+    // Seed tokens so the modal opens in signed-in mode and the renderer
+    // fires its /users/current request. Stub that request via page.route
+    // so we don't depend on network and so we control the rendered shape.
+    await win.route('**/api/v1/users/current', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          login: 'jeremy_test',
+          quotas: {
+            allowed_draft_cases: 25,
+            draft_case_count: 3,
+            allowed_unlisted_cases: 10,
+            unlisted_case_count: 1,
+          },
+        }),
+      });
+    });
+
+    await win.evaluate(() => {
+      const w = window as unknown as {
+        credentials: {
+          setRadiopaediaTokens: (t: unknown) => Promise<void>;
+        };
+      };
+      return w.credentials.setRadiopaediaTokens({
+        access_token: 'seeded-access',
+        refresh_token: 'seeded-refresh',
+        expires_at: Math.floor(Date.now() / 1000) + 3600,
+        token_type: 'Bearer',
+      });
+    });
+    await win.reload();
+    await expect(win.locator('#drop')).toBeVisible();
+    await win.locator('#btn-auth').click();
+    await expect(win.locator('#auth-signed-in')).toBeVisible();
+    // The profile block is repainted async after /users/current resolves.
+    // Wait for the login line rather than asserting on the loading text.
+    await expect(win.locator('.auth-profile-login')).toHaveText(/jeremy_test/);
+  });
+
+  test('submit code → success persists tokens and flips state', async () => {
+    // exchangeAuthorizationCode fires its /oauth/token POST from main
+    // (radiopaedia-oauth-oob.ts), so page.route can't intercept it. Patch
+    // globalThis.fetch in main with a request-aware stub that recognises
+    // the token endpoint and returns a fake token trio. The closure in
+    // radiopaedia-oauth-oob.ts (`fetch: (...args) => fetch(...args)`)
+    // resolves `fetch` from the global scope at call time, so the patch
+    // takes effect immediately for the next IPC dispatch.
+    await app.evaluate(() => {
+      const orig = globalThis.fetch;
+      const stub = async (input: unknown): Promise<Response> => {
+        const url = typeof input === 'string' ? input : (input as { url: string }).url;
+        if (url.includes('/oauth/token')) {
+          globalThis.fetch = orig;
+          return new Response(
+            JSON.stringify({
+              access_token: 'mock-access',
+              refresh_token: 'mock-refresh',
+              expires_in: 7200,
+              token_type: 'Bearer',
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          );
+        }
+        return orig(input as RequestInfo);
+      };
+      globalThis.fetch = stub as typeof fetch;
+    });
+
+    await win.locator('#btn-auth').click();
+    await expect(win.locator('#auth-modal')).toBeVisible();
+    await win.locator('#auth-code-input').fill('fake-code-12345');
+    await win.locator('#btn-auth-submit').click();
+
+    // On success the modal flips to the signed-in panel and the header
+    // button picks up the authed treatment.
+    await expect(win.locator('#auth-signed-in')).toBeVisible();
+    await expect(win.locator('#btn-auth')).toHaveText(/Radiopaedia ✓/);
+    const tokens = await win.evaluate(() => {
+      const w = window as unknown as {
+        credentials: { getRadiopaediaTokens: () => Promise<{ access_token: string } | null> };
+      };
+      return w.credentials.getRadiopaediaTokens();
+    });
+    expect(tokens?.access_token).toBe('mock-access');
+  });
+
+  test('submit code → error renders the inline exchange error', async () => {
+    // Same patching strategy as the success test, but return a non-ok
+    // response so the IPC handler resolves to 'error' and the renderer
+    // surfaces the inline message.
+    await app.evaluate(() => {
+      const orig = globalThis.fetch;
+      const stub = async (input: unknown): Promise<Response> => {
+        const url = typeof input === 'string' ? input : (input as { url: string }).url;
+        if (url.includes('/oauth/token')) {
+          globalThis.fetch = orig;
+          return new Response(
+            JSON.stringify({ error: 'invalid_grant' }),
+            { status: 400, headers: { 'content-type': 'application/json' } },
+          );
+        }
+        return orig(input as RequestInfo);
+      };
+      globalThis.fetch = stub as typeof fetch;
+    });
+
+    await win.locator('#btn-auth').click();
+    await win.locator('#auth-code-input').fill('bad-code');
+    await win.locator('#btn-auth-submit').click();
+
+    await expect(win.locator('#auth-exchange-error')).toBeVisible();
+    await expect(win.locator('#auth-exchange-error')).toContainText(/Exchange failed/);
+    // State should NOT have flipped — still signed-out.
+    await expect(win.locator('#btn-auth')).toHaveText(/Sign in to Radiopaedia/);
+    await expect(win.locator('#auth-signed-out')).toBeVisible();
   });
 });
