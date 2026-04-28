@@ -2173,6 +2173,9 @@ async function uploadCaseAndStudies(p: PreparedUpload): Promise<void> {
   btnPreviewCancel.textContent = 'Working…';
   uploadPreviewBlurb.hidden = true;
   clearResultBanner();
+  write(
+    `upload: started — "${p.title}" (${p.studyBundles.length} stud${p.studyBundles.length === 1 ? 'y' : 'ies'}, ${p.totalSeries} series)`,
+  );
 
   let token: string | null;
   let apiBase: string;
@@ -2220,6 +2223,8 @@ async function uploadCaseAndStudies(p: PreparedUpload): Promise<void> {
     }
     quotaOk = true;
     setStep('auth', 'done', allowed != null ? `quota ${used ?? '?'}/${allowed}` : 'ok');
+    write(`upload: auth ok${login ? ` as @${login}` : ''}${
+      allowed != null ? ` (drafts ${used ?? '?'}/${allowed})` : ''}`);
   } catch (e) {
     return apiCallFailed('auth', e);
   }
@@ -2237,6 +2242,7 @@ async function uploadCaseAndStudies(p: PreparedUpload): Promise<void> {
     // should surface back to the user (so they can inspect or delete it).
     partialCase = { caseId, apiBase };
     setStep('case', 'done', `case_id=${caseId}`);
+    write(`upload: case created — id ${caseId}`);
   } catch (e) {
     return apiCallFailed('case', e);
   }
@@ -2260,6 +2266,8 @@ async function uploadCaseAndStudies(p: PreparedUpload): Promise<void> {
       if (!studyId) throw new Error(`POST /studies response had no id: ${JSON.stringify(created)}`);
       studyIds.push(studyId);
       setStep(stepId, 'done', `study_id=${studyId}`);
+      const modality = (p.studyBundles[i].study as { modality?: string }).modality ?? '';
+      write(`upload: study ${i + 1} of ${p.studyBundles.length} created — id ${studyId}${modality ? ` (${modality})` : ''}`);
     } catch (e) {
       return apiCallFailed(stepId, e);
     }
@@ -2402,6 +2410,9 @@ function handleUploadEvent(e: _UploadEventPayload): void {
     }
     case 'series-done':
       // Don't paint the parent step done yet — more series may follow.
+      // Log so the activity log has a per-series breadcrumb that
+      // outlives the modal session.
+      write(`upload: series ${e.studyIdx + 1}.${e.seriesIdx + 1} uploaded`);
       break;
     case 'series-error':
       // Route the error to whichever step we were in when it fired.
@@ -2415,12 +2426,15 @@ function handleUploadEvent(e: _UploadEventPayload): void {
       break;
     case 'finalize-start':
       setStep('finalize', 'running');
+      write('upload: finalising case (mark_upload_finished)');
       break;
     case 'finalize-done':
       setStep('finalize', 'done');
+      write('upload: case finalised on Radiopaedia');
       break;
     case 'finalize-error':
       setStep('finalize', 'error', e.message);
+      write(`upload: finalise failed: ${e.message}`);
       break;
     case 'all-done':
     case 'aborted':
