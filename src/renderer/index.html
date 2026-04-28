@@ -742,6 +742,102 @@
     .typeahead-item:hover {
       background: rgba(10, 132, 255, 0.12);
     }
+    /* Upload preview modal */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.45);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+    }
+    .modal {
+      background: var(--bg, #fff);
+      color: inherit;
+      width: min(720px, 92vw);
+      max-height: 86vh;
+      display: flex;
+      flex-direction: column;
+      border-radius: 10px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+      overflow: hidden;
+    }
+    .modal-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 16px;
+      border-bottom: 1px solid rgba(127, 127, 127, 0.25);
+    }
+    .modal-header h2 { margin: 0; flex: 1 1 auto; font-size: 16px; }
+    .modal-body {
+      padding: 14px 18px;
+      overflow-y: auto;
+      flex: 1 1 auto;
+    }
+    .modal-body h3 {
+      font-size: 13px;
+      margin: 16px 0 6px;
+      color: #555;
+    }
+    .modal-warning {
+      padding: 10px 12px;
+      background: rgba(255, 196, 0, 0.12);
+      border: 1px solid rgba(255, 196, 0, 0.4);
+      border-radius: 6px;
+      font-size: 13px;
+      margin: 0 0 12px 0;
+    }
+    .preview-summary {
+      font-size: 13px;
+      color: #444;
+      line-height: 1.6;
+    }
+    .preview-summary .preview-row {
+      display: flex;
+      gap: 8px;
+    }
+    .preview-summary .preview-key {
+      color: #888;
+      width: 110px;
+      flex: 0 0 auto;
+    }
+    .preview-endpoints {
+      margin: 0;
+      padding-left: 22px;
+      font-size: 12px;
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      color: #444;
+    }
+    .preview-endpoints li { margin: 2px 0; }
+    .preview-payloads details {
+      margin: 6px 0;
+    }
+    .preview-payloads summary {
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 600;
+      color: #555;
+      padding: 4px 0;
+    }
+    .preview-payloads pre {
+      background: rgba(127, 127, 127, 0.08);
+      border: 1px solid rgba(127, 127, 127, 0.2);
+      border-radius: 6px;
+      padding: 8px 10px;
+      font-size: 11px;
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      overflow-x: auto;
+      margin: 4px 0 8px;
+    }
+    .modal-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      padding: 10px 16px;
+      border-top: 1px solid rgba(127, 127, 127, 0.25);
+    }
     .upload-series-row {
       display: flex;
       gap: 10px;
@@ -1027,6 +1123,30 @@
   </div>
 
   <div id="log"></div>
+
+  <div id="upload-preview" class="modal-overlay" hidden>
+    <div class="modal" role="dialog" aria-labelledby="upload-preview-title">
+      <div class="modal-header">
+        <h2 id="upload-preview-title">Upload preview</h2>
+        <button id="btn-preview-close" class="icon-btn" aria-label="Close" type="button">×</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-warning">
+          <strong>No upload has happened yet.</strong>
+          Live Radiopaedia API integration isn't wired up — this is a preview
+          of the requests that would be sent.
+        </p>
+        <div id="upload-preview-summary" class="preview-summary"></div>
+        <h3>Endpoints that would be called</h3>
+        <ol id="upload-preview-endpoints" class="preview-endpoints"></ol>
+        <h3>Request bodies</h3>
+        <div id="upload-preview-payloads" class="preview-payloads"></div>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-preview-ok" class="primary" type="button">Got it</button>
+      </div>
+    </div>
+  </div>
 
   <script type="module" src="./renderer.js"></script>
   <script type="module" src="./viewer.bundle.js"></script>

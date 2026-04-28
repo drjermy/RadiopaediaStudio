@@ -93,6 +93,14 @@ const caseForm = req<HTMLFormElement>('case-form');
 const btnAddCase = req<HTMLButtonElement>('btn-add-case');
 const btnUploadBack = req<HTMLButtonElement>('btn-upload-back');
 const uploadSeriesListEl = req<HTMLDivElement>('upload-series-list');
+
+// Upload-preview modal elements.
+const uploadPreview = req<HTMLDivElement>('upload-preview');
+const uploadPreviewSummary = req<HTMLDivElement>('upload-preview-summary');
+const uploadPreviewEndpoints = req<HTMLOListElement>('upload-preview-endpoints');
+const uploadPreviewPayloads = req<HTMLDivElement>('upload-preview-payloads');
+const btnPreviewClose = req<HTMLButtonElement>('btn-preview-close');
+const btnPreviewOk = req<HTMLButtonElement>('btn-preview-ok');
 const caseTitle = req<HTMLInputElement>('case-title');
 const caseTitleCounter = req<HTMLSpanElement>('case-title-counter');
 const caseSystem = req<HTMLSelectElement>('case-system');
@@ -1847,11 +1855,6 @@ btnCaseReady.addEventListener('click', () => {
     source_summary: studyMeta,
     output_root: anonOutput,
   };
-  // Upload is still a future issue. For now log the request bodies so the
-  // flow is visible end-to-end: one Case create + one Study create per
-  // DICOM study (positions start at 2; 1 is the case-discussion slot), and
-  // for each Study its child Series carry perspective/specifics that go to
-  // image_preparation after image upload.
   const casePayload = buildCaseCreatePayload(fullCase);
   const studies = collectStudies();
   const studyBundles = studies.map(({ study, series }, i) => ({
@@ -1860,10 +1863,117 @@ btnCaseReady.addEventListener('click', () => {
   }));
   const totalSeries = studies.reduce((n, { series }) => n + series.length, 0);
   write(
-    `case ready — ${form.title} (${studies.length} stud${studies.length === 1 ? 'y' : 'ies'}, ${totalSeries} series)`,
+    `upload preview shown — ${form.title} (${studies.length} stud${studies.length === 1 ? 'y' : 'ies'}, ${totalSeries} series). No upload performed.`,
   );
-  console.info('[renderer] case create payload:', casePayload);
-  console.info('[renderer] study + series bundles:', studyBundles);
+  showUploadPreview(form.title, casePayload, studyBundles, totalSeries);
+});
+
+// Render and show the upload-preview modal. Spells out what the live upload
+// would do — case create + per-study create + per-series image_preparation —
+// since the actual API integration isn't wired up yet and the user otherwise
+// gets no feedback when they hit the button.
+function showUploadPreview(
+  title: string,
+  casePayload: Record<string, unknown>,
+  studyBundles: Array<{ study: Record<string, unknown>; series: Series[] }>,
+  totalSeries: number,
+): void {
+  // Summary block ----------------------------------------------------------
+  uploadPreviewSummary.innerHTML = '';
+  const rows: Array<[string, string]> = [
+    ['Case title', title],
+    ['Studies', String(studyBundles.length)],
+    ['Series', String(totalSeries)],
+  ];
+  for (const [k, v] of rows) {
+    const row = document.createElement('div');
+    row.className = 'preview-row';
+    const key = document.createElement('span');
+    key.className = 'preview-key';
+    key.textContent = k;
+    const val = document.createElement('span');
+    val.textContent = v;
+    row.append(key, val);
+    uploadPreviewSummary.appendChild(row);
+  }
+
+  // Endpoint list ----------------------------------------------------------
+  uploadPreviewEndpoints.innerHTML = '';
+  const endpoints: string[] = [
+    'GET  /api/v1/users/current  (auth + quota check)',
+    'POST /api/v1/cases',
+  ];
+  for (let i = 0; i < studyBundles.length; i++) {
+    endpoints.push(`POST /api/v1/cases/:case_id/studies  (study ${i + 1} of ${studyBundles.length})`);
+  }
+  if (totalSeries > 0) {
+    endpoints.push(
+      `POST /direct_s3_uploads  (×${totalSeries}, one per series stack)`,
+      `PUT  <S3 presigned URL>  (×N, one per DICOM slice)`,
+      `POST /image_preparation/:case_id/studies/:study_id/series  (×${totalSeries})`,
+      `PATCH /image_preparation/:case_id/studies/:study_id/series/:series_id  (perspective + specifics)`,
+    );
+  }
+  endpoints.push('PUT  /api/v1/cases/:case_id/mark_upload_finished');
+  for (const e of endpoints) {
+    const li = document.createElement('li');
+    li.textContent = e;
+    uploadPreviewEndpoints.appendChild(li);
+  }
+
+  // Payload bodies (collapsed by default to keep the modal scannable) ------
+  uploadPreviewPayloads.innerHTML = '';
+  appendPayload(uploadPreviewPayloads, 'POST /api/v1/cases', casePayload, true);
+  for (let i = 0; i < studyBundles.length; i++) {
+    const { study, series } = studyBundles[i];
+    appendPayload(
+      uploadPreviewPayloads,
+      `POST /api/v1/cases/:case_id/studies — study ${i + 1}`,
+      study,
+      false,
+    );
+    if (series.length > 0) {
+      appendPayload(
+        uploadPreviewPayloads,
+        `Series under study ${i + 1} — perspective + specifics (sent on image_preparation)`,
+        series,
+        false,
+      );
+    }
+  }
+
+  uploadPreview.hidden = false;
+}
+
+function appendPayload(
+  parent: HTMLElement,
+  label: string,
+  body: unknown,
+  open: boolean,
+): void {
+  const det = document.createElement('details');
+  if (open) det.open = true;
+  const sum = document.createElement('summary');
+  sum.textContent = label;
+  det.appendChild(sum);
+  const pre = document.createElement('pre');
+  pre.textContent = JSON.stringify(body, null, 2);
+  det.appendChild(pre);
+  parent.appendChild(det);
+}
+
+function hideUploadPreview(): void {
+  uploadPreview.hidden = true;
+}
+
+btnPreviewClose.addEventListener('click', hideUploadPreview);
+btnPreviewOk.addEventListener('click', hideUploadPreview);
+uploadPreview.addEventListener('click', (e) => {
+  // Click on the dim backdrop (but not the modal itself) closes.
+  if (e.target === uploadPreview) hideUploadPreview();
+});
+document.addEventListener('keydown', (e) => {
+  if (!uploadPreview.hidden && e.key === 'Escape') hideUploadPreview();
 });
 
 // Try to restore any previously-saved draft at startup. We restore the
