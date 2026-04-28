@@ -22,7 +22,7 @@
 // `playwright test` directly without going through `npm run test:e2e`.
 
 import { test, expect, _electron as electron, ElectronApplication, Page } from '@playwright/test';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
@@ -258,6 +258,62 @@ test.describe('packaged app — boot integrity', () => {
     const light = await probe();
     expect(lum(light.bg), 'light scheme: modal background should be light').toBeGreaterThan(160);
     expect(lum(light.fg), 'light scheme: modal foreground should be dark').toBeLessThan(96);
+  });
+
+  test('packaged build closes devtools as soon as they open', async () => {
+    // index.ts:75-79 attaches a `devtools-opened` listener that
+    // immediately calls closeDevTools when running packaged. Verify the
+    // listener is wired and effective: open devtools from the test, wait
+    // briefly, assert they're closed again. A refactor that removes the
+    // gate (e.g. dropping the `app.isPackaged` check) would let the
+    // panel stay open in production.
+    await app.evaluate(({ BrowserWindow }) => {
+      const w = BrowserWindow.getAllWindows()[0];
+      w.webContents.openDevTools({ mode: 'detach' });
+    });
+    // Auto-close runs in the next tick after the open event; poll briefly
+    // to absorb the timing rather than picking an arbitrary sleep.
+    await expect
+      .poll(async () =>
+        app.evaluate(({ BrowserWindow }) =>
+          BrowserWindow.getAllWindows()[0].webContents.isDevToolsOpened(),
+        ),
+      )
+      .toBe(false);
+  });
+
+  test('non-DICOM folder selection logs a clean error and stays idle', async () => {
+    // Pick a tmpdir of garbage via the Open Folder button. Patches the
+    // main-side dialog so the real picker doesn't open. Asserts the
+    // renderer surfaces "0 studies, 0 series" in the activity log
+    // (Open Folder takes the read-only /scan path; drag-drop would go
+    // through /inspect with a different message). Drop zone stays
+    // visible — i.e. the renderer doesn't crash and doesn't transition
+    // to a stuck state.
+    const fakeFolder = mkdtempSync(path.join(os.tmpdir(), 'rp-studio-garbage-'));
+    try {
+      // Drop a couple of non-DICOM files so the folder isn't empty
+      // (which might produce a different error path).
+      writeFileSync(path.join(fakeFolder, 'readme.txt'), 'not a dicom');
+      writeFileSync(path.join(fakeFolder, 'image.jpg'), 'fake');
+
+      await app.evaluate(({ dialog }, folder) => {
+        dialog.showOpenDialog = async () => ({
+          canceled: false,
+          filePaths: [folder],
+        });
+      }, fakeFolder);
+
+      const win = await app.firstWindow();
+      await expect(win.locator('#drop')).toBeVisible();
+      await win.locator('#btn-open-folder').click();
+      await expect(win.locator('#log-body')).toContainText(/0 studies, 0 series/);
+      // Renderer didn't crash — the Reset button is now visible (state
+      // moved to non-idle cleanly) so the user can recover.
+      await expect(win.locator('#btn-reset')).toBeVisible();
+    } finally {
+      rmSync(fakeFolder, { recursive: true, force: true });
+    }
   });
 
   test('shellBridge.openExternal rejects non-http URLs', async () => {
@@ -580,6 +636,95 @@ test.describe('packaged app — auth flow', () => {
     // State should NOT have flipped — still signed-out.
     await expect(win.locator('#btn-auth')).toHaveText(/Sign in to Radiopaedia/);
     await expect(win.locator('#auth-signed-out')).toBeVisible();
+  });
+
+  test('expired access token is refreshed end-to-end via /oauth/token', async () => {
+    // Wires together: persisted-tokens read from userData → main
+    // checkUploadStatus → getValidAccessToken sees expires_at in the
+    // past → posts to /oauth/token → persists the rotated trio →
+    // retries the API request with the new bearer. The auth-core unit
+    // tests cover the refresh decision logic; this test covers the
+    // wiring across the IPC + persistence + API boundaries together.
+    await app.evaluate(() => {
+      const orig = globalThis.fetch;
+      (globalThis as Record<string, unknown>).__lastImagePrepAuth = null;
+      globalThis.fetch = (async (input: unknown, init: unknown): Promise<Response> => {
+        const url = typeof input === 'string' ? input : (input as { url: string }).url;
+        if (url.includes('/oauth/token')) {
+          return new Response(
+            JSON.stringify({
+              access_token: 'refreshed-access',
+              refresh_token: 'refreshed-refresh',
+              expires_in: 7200,
+              token_type: 'Bearer',
+            }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          );
+        }
+        if (url.includes('/image_preparation/')) {
+          const headers = (init as { headers?: Record<string, string> })?.headers ?? {};
+          (globalThis as Record<string, unknown>).__lastImagePrepAuth =
+            headers['Authorization'] ?? headers.Authorization ?? null;
+          return new Response(
+            JSON.stringify({ series: { seriesId: 1, status: 'ready' } }),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          );
+        }
+        return orig(input as RequestInfo, init as RequestInit | undefined);
+      }) as typeof fetch;
+    });
+
+    // Seed expired-but-refreshable tokens. expires_at strictly in the
+    // past so the refresh-margin check fires regardless of the auth
+    // core's REFRESH_MARGIN_SECONDS value.
+    await win.evaluate(() => {
+      const w = window as unknown as {
+        credentials: { setRadiopaediaTokens: (t: unknown) => Promise<void> };
+      };
+      return w.credentials.setRadiopaediaTokens({
+        access_token: 'stale-access',
+        refresh_token: 'valid-refresh',
+        expires_at: Math.floor(Date.now() / 1000) - 60,
+        token_type: 'Bearer',
+      });
+    });
+    // Seed a sent-case row so opening the panel triggers
+    // checkUploadStatus → which is the path that calls
+    // getValidAccessToken → which fires the refresh.
+    await win.evaluate(() => {
+      localStorage.setItem('radiopaedia-studio:sent-cases', JSON.stringify([{
+        v: 1,
+        caseId: 9999,
+        apiBase: 'https://env-develop.radiopaedia-dev.org',
+        title: 'token-refresh trigger',
+        uploadedAt: new Date().toISOString(),
+        jobs: [{
+          studyIdx: 0, seriesIdx: 0, studyId: 1, jobId: 'jobX',
+          lastKnownStatus: null, lastCheckedAt: null,
+        }],
+      }]));
+    });
+
+    await win.locator('#btn-sent').click();
+    await expect(win.locator('.sent-row-summary')).toContainText(/1 ready/);
+
+    // The /image_preparation/ request must have been made with the
+    // refreshed bearer, not the stale one.
+    const auth = await app.evaluate(
+      () => (globalThis as Record<string, unknown>).__lastImagePrepAuth,
+    );
+    expect(auth).toBe('Bearer refreshed-access');
+
+    // And the rotated trio must be persisted so the next call doesn't
+    // re-refresh.
+    const tokens = await win.evaluate(() => {
+      const w = window as unknown as {
+        credentials: { getRadiopaediaTokens: () => Promise<{ access_token: string; refresh_token: string } | null> };
+      };
+      return w.credentials.getRadiopaediaTokens();
+    });
+    expect(tokens?.access_token).toBe('refreshed-access');
+    expect(tokens?.refresh_token).toBe('refreshed-refresh');
   });
 });
 
