@@ -66,3 +66,18 @@ contextBridge.exposeInMainWorld('radiopaedia', {
   exchangeAuthorizationCode: (code: string): Promise<AuthExchangeResult> =>
     ipcRenderer.invoke('radiopaedia:exchange-authorization-code', code),
 });
+
+contextBridge.exposeInMainWorld('uploadBridge', {
+  // Kicks off the image-upload pipeline in main. Resolves once the
+  // orchestrator settles. Per-step progress arrives via onEvent below.
+  startImages: (spec: unknown): Promise<{ status: 'ok' | 'error' | 'aborted'; message?: string }> =>
+    ipcRenderer.invoke('upload:start-images', spec),
+  abort: (): Promise<void> => ipcRenderer.invoke('upload:abort'),
+  // Subscribe to streaming events. Returns an unsubscribe function so the
+  // renderer can drop the listener when the modal closes.
+  onEvent: (handler: (e: unknown) => void): (() => void) => {
+    const sub = (_evt: unknown, payload: unknown): void => handler(payload);
+    ipcRenderer.on('upload:event', sub);
+    return () => { ipcRenderer.removeListener('upload:event', sub); };
+  },
+});

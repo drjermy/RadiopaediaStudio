@@ -16,6 +16,11 @@ import {
 import { getValidAccessToken } from './radiopaedia-auth';
 import { RADIOPAEDIA_API_BASE } from './radiopaedia-config';
 import {
+  runImageUpload,
+  type ImageUploadSpec,
+  type UploadEvent,
+} from './upload-images';
+import {
   openAuthorizationPage,
   exchangeAuthorizationCode,
   type AuthExchangeResult,
@@ -35,6 +40,10 @@ app.setName('Radiopaedia Studio');
 let backend: BackendHandle | null = null;
 let nodeBackend: NodeBackendHandle | null = null;
 let mainWindow: BrowserWindow | null = null;
+// Tracks the in-flight image upload, if any. Only one runs at a time so a
+// single AbortController is enough — kicking off a new upload before the
+// previous finishes is a UX failure, not something we have to support.
+let uploadAbort: AbortController | null = null;
 
 const projectRoot = path.resolve(__dirname, '..', '..');
 const rendererRoot = app.isPackaged
@@ -169,6 +178,33 @@ app.whenReady().then(async () => {
     (_evt, code: string): Promise<AuthExchangeResult> =>
       exchangeAuthorizationCode(code),
   );
+  // Image-upload pipeline. Returns once the orchestrator settles —
+  // success ('ok'), error ('error', with message), or abort ('aborted').
+  // Per-step progress is streamed via the `upload:event` channel below.
+  ipcMain.handle(
+    'upload:start-images',
+    async (_evt, spec: ImageUploadSpec): Promise<{ status: 'ok' | 'error' | 'aborted'; message?: string }> => {
+      if (uploadAbort) {
+        return { status: 'error', message: 'Another upload is already running.' };
+      }
+      uploadAbort = new AbortController();
+      const emit = (e: UploadEvent): void => {
+        mainWindow?.webContents.send('upload:event', e);
+      };
+      try {
+        await runImageUpload(spec, emit, uploadAbort.signal);
+        return { status: 'ok' };
+      } catch (err) {
+        if (uploadAbort?.signal.aborted) return { status: 'aborted' };
+        return { status: 'error', message: (err as Error)?.message ?? String(err) };
+      } finally {
+        uploadAbort = null;
+      }
+    },
+  );
+  ipcMain.handle('upload:abort', (): void => {
+    uploadAbort?.abort();
+  });
   ipcMain.handle('dialog:pickFolder', async (): Promise<string | null> => {
     if (!mainWindow) return null;
     const result = await dialog.showOpenDialog(mainWindow, {

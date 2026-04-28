@@ -53,6 +53,35 @@ interface RadiopaediaBridge {
   exchangeAuthorizationCode(code: string): Promise<RadiopaediaAuthExchangeResult>;
 }
 
+interface UploadSeriesSpec {
+  folder: string;
+  perspective?: string;
+  specifics?: string;
+}
+interface UploadStartSpec {
+  caseId: number;
+  studies: Array<{ studyId: number; series: UploadSeriesSpec[] }>;
+}
+type UploadStartResult = { status: 'ok' | 'error' | 'aborted'; message?: string };
+
+type UploadPhase = 'hash' | 'presign' | 'upload' | 'prepare';
+type UploadEventPayload =
+  | { type: 'series-start'; studyIdx: number; seriesIdx: number; folder: string; sliceCount: number }
+  | { type: 'series-progress'; studyIdx: number; seriesIdx: number; phase: UploadPhase; done: number; total: number }
+  | { type: 'series-done'; studyIdx: number; seriesIdx: number }
+  | { type: 'series-error'; studyIdx: number; seriesIdx: number; message: string }
+  | { type: 'finalize-start' }
+  | { type: 'finalize-done' }
+  | { type: 'finalize-error'; message: string }
+  | { type: 'all-done'; caseId: number }
+  | { type: 'aborted' };
+
+interface UploadBridge {
+  startImages(spec: UploadStartSpec): Promise<UploadStartResult>;
+  abort(): Promise<void>;
+  onEvent(handler: (e: UploadEventPayload) => void): () => void;
+}
+
 // viewer.js → window.viewerAPI (see src/renderer/viewer.js).
 // `open` takes a folder path, a DOM container, and optional hints so the
 // first render matches the series' native geometry / window.
@@ -99,6 +128,7 @@ declare global {
     dialogBridge: DialogBridge;
     credentials: CredentialsBridge;
     radiopaedia: RadiopaediaBridge;
+    uploadBridge: UploadBridge;
     viewerAPI?: ViewerAPI;
   }
 

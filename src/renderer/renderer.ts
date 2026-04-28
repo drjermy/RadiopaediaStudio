@@ -2003,7 +2003,12 @@ function renderInitialSteps(studyCount: number, _totalSeries: number): void {
   }
   list.push({
     id: 'images',
-    label: 'Upload images (S3 + image_preparation) — not in this slice',
+    label: 'Upload images (S3 + image_preparation)',
+    status: 'pending',
+  });
+  list.push({
+    id: 'finalize',
+    label: 'Finalise (PUT /cases/:id/mark_upload_finished)',
     status: 'pending',
   });
   steps = list;
@@ -2208,12 +2213,121 @@ async function uploadCaseAndStudies(p: PreparedUpload): Promise<void> {
     }
   }
 
-  // 4. Images deferred — leave the case as a draft so the user can inspect
-  // the case + study shape on the website. This is the slice boundary; the
-  // next change wires S3 + image_preparation.
-  setStep('images', 'pending', 'left as draft for review — see follow-up');
+  // 4. Image upload + finalise. Driven from main via the upload bridge so
+  // the orchestrator can stream large DICOM files off disk, hash them,
+  // PUT to S3, and feed /image_preparation. We listen for events to
+  // update the modal step list.
+  const imagesOk = await runImageUploadViaBridge(p, caseId!, studyIds);
+  if (!imagesOk) return;
 
   finishWithSuccess(apiBase, caseId!, p.title, studyIds);
+}
+
+async function runImageUploadViaBridge(
+  p: PreparedUpload,
+  caseId: number,
+  studyIds: number[],
+): Promise<boolean> {
+  setStep('images', 'running', 'starting…');
+
+  // Build the upload spec from the prepared bundles. p.studyBundles already
+  // has the original Series objects with folder + perspective + specifics
+  // — we just pair them with the studyIds we got back from the create.
+  const studies = p.studyBundles.map(({ series }, i) => ({
+    studyId: studyIds[i],
+    series: series.map((s) => ({
+      folder: s.folder,
+      perspective: s.perspective,
+      specifics: s.specifics,
+    })),
+  }));
+
+  // Allow Cancel to abort the upload mid-flight. While the upload is
+  // running, Cancel calls uploadBridge.abort() instead of just closing
+  // the modal — closing wouldn't stop main's pipeline.
+  btnPreviewCancel.disabled = false;
+  btnPreviewCancel.textContent = 'Cancel upload';
+  const cancelHandler = (): void => {
+    btnPreviewCancel.disabled = true;
+    btnPreviewCancel.textContent = 'Aborting…';
+    void window.uploadBridge.abort();
+  };
+  btnPreviewCancel.addEventListener('click', cancelHandler);
+
+  const off = window.uploadBridge.onEvent(handleUploadEvent);
+  try {
+    const result = await window.uploadBridge.startImages({ caseId, studies });
+    if (result.status === 'ok') {
+      setStep('images', 'done');
+      return true;
+    }
+    if (result.status === 'aborted') {
+      setStep('images', 'error', 'aborted by user');
+      setStep('finalize', 'pending', 'skipped — upload aborted');
+      finishWithError('images', 'Upload aborted. The case is left as a draft on Radiopaedia.');
+      return false;
+    }
+    setStep('images', 'error', result.message ?? 'unknown error');
+    setStep('finalize', 'pending', 'skipped — image upload failed');
+    finishWithError('images', result.message ?? 'image upload failed');
+    return false;
+  } finally {
+    off();
+    btnPreviewCancel.removeEventListener('click', cancelHandler);
+  }
+}
+
+// Mirrors the UploadEventPayload union in globals.d.ts. Defined locally
+// because globals.d.ts is a module file (it has top-level exports), so the
+// types within it aren't visible from renderer.ts via the global scope.
+type _UploadEventPayload =
+  | { type: 'series-start'; studyIdx: number; seriesIdx: number; folder: string; sliceCount: number }
+  | { type: 'series-progress'; studyIdx: number; seriesIdx: number; phase: 'hash' | 'presign' | 'upload' | 'prepare'; done: number; total: number }
+  | { type: 'series-done'; studyIdx: number; seriesIdx: number }
+  | { type: 'series-error'; studyIdx: number; seriesIdx: number; message: string }
+  | { type: 'finalize-start' }
+  | { type: 'finalize-done' }
+  | { type: 'finalize-error'; message: string }
+  | { type: 'all-done'; caseId: number }
+  | { type: 'aborted' };
+
+function handleUploadEvent(e: _UploadEventPayload): void {
+  switch (e.type) {
+    case 'series-start':
+      setStep('images', 'running',
+        `study ${e.studyIdx + 1}, series ${e.seriesIdx + 1} — ${e.sliceCount} slice${e.sliceCount === 1 ? '' : 's'}`);
+      break;
+    case 'series-progress': {
+      const phase = e.phase === 'hash' ? 'hashing'
+        : e.phase === 'presign' ? 'presigning'
+        : e.phase === 'upload' ? 'uploading'
+        : 'preparing';
+      setStep('images', 'running',
+        `study ${e.studyIdx + 1}, series ${e.seriesIdx + 1} — ${phase} ${e.done}/${e.total}`);
+      break;
+    }
+    case 'series-done':
+      // Don't paint the parent step done yet — more series may follow.
+      break;
+    case 'series-error':
+      setStep('images', 'error',
+        `study ${e.studyIdx + 1}, series ${e.seriesIdx + 1}: ${e.message}`);
+      break;
+    case 'finalize-start':
+      setStep('finalize', 'running');
+      break;
+    case 'finalize-done':
+      setStep('finalize', 'done');
+      break;
+    case 'finalize-error':
+      setStep('finalize', 'error', e.message);
+      break;
+    case 'all-done':
+    case 'aborted':
+      // The startImages promise resolves with the final status; the
+      // surrounding helper handles the UI transitions there.
+      break;
+  }
 }
 
 function apiCallFailed(stepId: string, err: unknown): void {
@@ -2388,11 +2502,11 @@ function finishWithSuccess(
   const caseUrl = `${apiBase}/cases/${caseId}`;
 
   const heading = document.createElement('div');
-  heading.innerHTML = `<strong>Created draft case ${caseId}</strong> — ${escapeHtmlText(title)}`;
+  heading.innerHTML = `<strong>Uploaded case ${caseId}</strong> — ${escapeHtmlText(title)}`;
   const sub = document.createElement('div');
   sub.style.marginTop = '6px';
   sub.style.opacity = '0.75';
-  sub.textContent = `${studyIds.length} stud${studyIds.length === 1 ? 'y' : 'ies'} created (no images yet — image upload is the next slice).`;
+  sub.textContent = `${studyIds.length} stud${studyIds.length === 1 ? 'y' : 'ies'} created with images, finalised on Radiopaedia.`;
   const link = document.createElement('div');
   link.style.marginTop = '8px';
   const a = document.createElement('a');
