@@ -142,27 +142,34 @@ function emitState() {
     : true;
 
   // Predict how many output slices a Save with the current slab settings
-  // would produce. Two cases:
+  // would produce. Three cases, each with a different source of "extent":
   //
-  //   - Native (source orientation + slab equals source thickness/spacing):
-  //     the renderer skips reformat entirely on Save, so the output is the
-  //     source unchanged. Predicted = sourceSliceCount.
+  //   1. Native (source orientation + slab equals source thickness/spacing):
+  //      the renderer skips reformat entirely on Save, so the output is the
+  //      source unchanged. Predicted = sourceSliceCount, exact.
   //
-  //   - Non-native, in source orientation: Save reformats. The backend
-  //     formula (backend/app/reformat.py) is
-  //     `floor((extent - thickness) / spacing) + 1`, where extent is the
-  //     center-to-center span = (sourceSliceCount - 1) * sourceSpacing.
-  //     Mirror that here so the readout matches what Save actually produces.
+  //   2. Non-native, source plane: Save reformats. We use the backend
+  //      formula (backend/app/reformat.py:
+  //      `floor((extent - thickness) / spacing) + 1`) with extent =
+  //      (sourceSliceCount - 1) * sourceSpacing — the proper center-to-
+  //      center span. Matches what Save will produce.
   //
-  // Cross-plane reformats need the in-slice extent which we don't know
-  // from the summary — leave the field null in that case so the renderer
-  // hides the row rather than guessing.
+  //   3. Cross-plane reformat: extent comes from the Cornerstone volume's
+  //      world-space bounds along the current view axis. Approximate
+  //      relative to what backend reformat will produce (the backend
+  //      builds its own volume from pydicom, which can have slightly
+  //      different bounds), but useful as an order-of-magnitude estimate
+  //      — the use case is "this study has 300 slices axial; how many
+  //      will I get coronal?" not "exactly N slices please".
   let predictedSliceCount = null;
   let volumeExtentMm = null;
-  if (
+  const isSourcePlane =
     currentIsVolume
     && currentOrientation && sourceOrientation
-    && cornerstoneToSourceLabel(currentOrientation) === sourceOrientation
+    && cornerstoneToSourceLabel(currentOrientation) === sourceOrientation;
+
+  if (
+    isSourcePlane
     && sourceSliceCount != null && sourceSpacing != null && sourceSpacing > 0
     && slabSpacing > 0
   ) {
@@ -177,6 +184,27 @@ function emitState() {
         predictedSliceCount = 1; // slab spans the whole volume → MIP-style single slice
       }
     }
+  } else if (currentIsVolume && currentVolumeId && slabSpacing > 0) {
+    // Cross-plane reformat — read the volume's world bounds and pick
+    // the axis matching the current view direction.
+    try {
+      const v = cornerstone.cache.getVolume(currentVolumeId);
+      // vtk.js ImageData getBounds returns [xmin, xmax, ymin, ymax, zmin, zmax].
+      // axial scrolls along Z, coronal along Y, sagittal along X.
+      const bounds = v?.imageData?.getBounds?.();
+      if (bounds && bounds.length === 6) {
+        const axisStart =
+          currentOrientation === OrientationAxis.SAGITTAL ? 0
+          : currentOrientation === OrientationAxis.CORONAL ? 2
+          : 4;
+        volumeExtentMm = bounds[axisStart + 1] - bounds[axisStart];
+        if (slabThickness < volumeExtentMm) {
+          predictedSliceCount = Math.floor((volumeExtentMm - slabThickness) / slabSpacing) + 1;
+        } else {
+          predictedSliceCount = 1;
+        }
+      }
+    } catch { /* volume mid-load or no bounds available — leave null */ }
   }
 
   document.dispatchEvent(new CustomEvent('viewer:state', {
