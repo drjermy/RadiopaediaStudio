@@ -467,6 +467,7 @@ async function openViewerForSeries(
       forceStack: trimOnly,
       sliceThickness: se.slice_thickness,
       sliceSpacing: se.slice_spacing,
+      sliceCount: se.slice_count,
       orientation: se.orientation,
       windowCenter: se.window_center,
       windowWidth:  se.window_width,

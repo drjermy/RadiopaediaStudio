@@ -91,6 +91,7 @@ interface ViewerOpenOpts {
   forceStack?: boolean;
   sliceThickness?: number | null;
   sliceSpacing?: number | null;
+  sliceCount?: number | null;
   orientation?: string | null;
   windowCenter?: number | null;
   windowWidth?: number | null;

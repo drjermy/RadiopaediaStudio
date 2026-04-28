@@ -36,6 +36,7 @@ let slabSpacing = 1;          // mm, current scroll step (denominator)
 let sourceThickness = null;   // SliceThickness from acquisition, mm
 let sourceSpacing = null;     // computed slice spacing along normal, mm
 let sourceOrientation = null; // 'axial' | 'coronal' | 'sagittal' — acquisition plane
+let sourceSliceCount = null;  // number of source slices — used to predict reformat output count
 let pendingWindowCenter = null;
 let pendingWindowWidth  = null;
 let currentVolumeId = null;   // unique per-open so we never reuse a cached
@@ -89,6 +90,17 @@ function trimIsApplicable() {
   return currentOrientation === sourceOrientation && isAtNative();
 }
 
+// Cornerstone's OrientationAxis is a string enum — its values happen to
+// match our 'axial' | 'coronal' | 'sagittal' lowercase labels. This helper
+// is here to make that mapping intent-explicit and to give us a single
+// place to change if the enum ever drifts.
+function cornerstoneToSourceLabel(o) {
+  if (o === OrientationAxis.AXIAL) return 'axial';
+  if (o === OrientationAxis.CORONAL) return 'coronal';
+  if (o === OrientationAxis.SAGITTAL) return 'sagittal';
+  return null;
+}
+
 function isAtNative() {
   // "Native" means we're rendering at the source acquisition values. In the
   // acquisition orientation that coincides with the floor; elsewhere the
@@ -129,34 +141,31 @@ function emitState() {
     ? currentOrientation === defaultOrientation && atNative
     : true;
 
-  // When viewing a volume, predict how many output slices a Save with the
-  // current slab settings would produce — extent of the volume along the
-  // current view axis, divided by the slab spacing (matches the formula in
-  // backend/app/reformat.py: floor((extent - thickness) / spacing) + 1).
-  // Renderer surfaces this so the user knows the cost of the slab choice
-  // before committing.
+  // Predict how many output slices a Save with the current slab settings
+  // would produce — using the source acquisition's known slice count and
+  // spacing, matched to the formula the backend reformat applies
+  // (backend/app/reformat.py: floor((extent - thickness) / spacing) + 1).
+  //
+  // Only meaningful in the source orientation: in source orientation we
+  // know the volume's extent along the scroll axis (sourceSliceCount *
+  // sourceSpacing). In a cross-plane reformat the relevant extent is the
+  // in-slice dimension, which we don't know from the summary — leaving
+  // the field null in that case keeps the renderer from guessing.
   let predictedSliceCount = null;
   let volumeExtentMm = null;
-  if (currentIsVolume && currentVolumeId) {
-    try {
-      const v = cornerstone.cache.getVolume(currentVolumeId);
-      const dims = v?.dimensions;     // [nx, ny, nz] voxels
-      const spacing = v?.spacing;     // [dx, dy, dz] mm
-      if (dims && spacing) {
-        // Cornerstone's volume axes are world-aligned (X=L-R, Y=A-P, Z=S-I).
-        // axial scrolls along Z, coronal along Y, sagittal along X.
-        const axisIndex =
-          currentOrientation === OrientationAxis.CORONAL  ? 1
-          : currentOrientation === OrientationAxis.SAGITTAL ? 0
-          : 2;
-        volumeExtentMm = dims[axisIndex] * spacing[axisIndex];
-        if (slabThickness < volumeExtentMm && slabSpacing > 0) {
-          predictedSliceCount = Math.floor((volumeExtentMm - slabThickness) / slabSpacing) + 1;
-        } else {
-          predictedSliceCount = 1; // slab spans the whole volume → MIP-style single slice
-        }
-      }
-    } catch { /* volume might be mid-load — leave fields null */ }
+  if (
+    currentIsVolume
+    && currentOrientation && sourceOrientation
+    && cornerstoneToSourceLabel(currentOrientation) === sourceOrientation
+    && sourceSliceCount != null && sourceSpacing != null && sourceSpacing > 0
+    && slabSpacing > 0
+  ) {
+    volumeExtentMm = sourceSliceCount * sourceSpacing;
+    if (slabThickness < volumeExtentMm) {
+      predictedSliceCount = Math.floor((volumeExtentMm - slabThickness) / slabSpacing) + 1;
+    } else {
+      predictedSliceCount = 1; // slab spans the whole volume → MIP-style single slice
+    }
   }
 
   document.dispatchEvent(new CustomEvent('viewer:state', {
@@ -233,9 +242,11 @@ async function loadStack(folder) {
 
 async function open(folder, container, opts = {}) {
   const { forceStack = false, sliceThickness = null, sliceSpacing = null,
+          sliceCount = null,
           orientation = null, windowCenter = null, windowWidth = null } = opts;
   sourceThickness = Number.isFinite(sliceThickness) ? sliceThickness : null;
   sourceSpacing = Number.isFinite(sliceSpacing) ? sliceSpacing : null;
+  sourceSliceCount = Number.isFinite(sliceCount) && sliceCount > 0 ? sliceCount : null;
   sourceOrientation = orientation || null;
   pendingWindowCenter = Number.isFinite(windowCenter) ? windowCenter : null;
   pendingWindowWidth  = Number.isFinite(windowWidth)  ? windowWidth  : null;
