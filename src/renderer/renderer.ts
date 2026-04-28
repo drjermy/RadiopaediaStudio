@@ -2692,6 +2692,20 @@ function finishWithSuccess(
   sub.style.marginTop = '6px';
   sub.style.opacity = '0.75';
   sub.textContent = `${studyIds.length} stud${studyIds.length === 1 ? 'y' : 'ies'} created with images, finalised on Radiopaedia.`;
+  // Heads-up: Radiopaedia runs a DICOM-conversion + thumbnail job after
+  // mark_upload_finished. The case page exists immediately but the
+  // studies / series tiles won't show up until that job completes —
+  // typically a few seconds for a small study, longer for a big one.
+  // Without this note the user sees an "empty" case and assumes the
+  // upload silently failed.
+  const heads = document.createElement('div');
+  heads.style.marginTop = '8px';
+  heads.style.fontSize = '12px';
+  heads.style.opacity = '0.75';
+  heads.textContent =
+    'Radiopaedia processes the uploaded DICOMs in the background. ' +
+    'The case page may appear empty for the first few seconds — refresh ' +
+    'the page once or twice to see the series as they finish converting.';
   const link = document.createElement('div');
   link.style.marginTop = '8px';
   const a = document.createElement('a');
@@ -2707,6 +2721,7 @@ function finishWithSuccess(
 
   uploadPreviewResult.appendChild(heading);
   uploadPreviewResult.appendChild(sub);
+  uploadPreviewResult.appendChild(heads);
   uploadPreviewResult.appendChild(link);
   write(`case created on Radiopaedia: ${caseUrl} (${studyIds.length} studies)`);
 }
